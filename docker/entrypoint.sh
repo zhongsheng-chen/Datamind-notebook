@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # ==========================================
 # 颜色定义
@@ -16,6 +16,7 @@ NC='\033[0m' # No Color
 # 全局变量
 # ==========================================
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 START_TIME=$(date +%s)
 EXIT_CODE=0
 CLEANUP_FILES=()          # 需要清理的临时文件列表
@@ -33,64 +34,67 @@ get_timestamp() {
 }
 
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $(get_timestamp) $1"
+    echo -e "${GREEN}[INFO]${NC} $(get_timestamp) $*"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $(get_timestamp) $1"
+    echo -e "${YELLOW}[WARN]${NC} $(get_timestamp) $*" >&2
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $(get_timestamp) $1"
+    echo -e "${RED}[ERROR]${NC} $(get_timestamp) $*" >&2
 }
 
 log_debug() {
-    if [ "${DEBUG}" = "true" ] || [ "${BUILD_TYPE}" = "development" ]; then
-        echo -e "${BLUE}[DEBUG]${NC} $(get_timestamp) $1"
+    if [ "${DEBUG:-false}" = "true" ] || [ "${BUILD_TYPE:-production}" = "development" ]; then
+        echo -e "${BLUE}[DEBUG]${NC} $(get_timestamp) $*" >&2
     fi
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $(get_timestamp) $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $(get_timestamp) $*"
 }
 
 # ==========================================
 # 显示帮助信息
 # ==========================================
 show_help() {
-    echo -e "${CYAN}Usage:${NC}"
-    echo "  docker run [OPTIONS] datamind-notebook [COMMAND] [ARGS...]"
-    echo ""
-    echo -e "${CYAN}Environment Variables:${NC}"
-    echo "  NB_USER              Username (default: jovyan)"
-    echo "  NB_UID               User ID (default: 1000)"
-    echo "  NB_GID               Group ID (default: 1000)"
-    echo "  JUPYTER_IP           IP to bind (default: 0.0.0.0)"
-    echo "  JUPYTER_PORT         Port to listen on (default: 8888)"
-    echo "  JUPYTER_DIR          Working directory (default: /home/jovyan/workspace)"
-    echo "  JUPYTER_MODE         'notebook' or 'lab' (default: notebook)"
-    echo "  JUPYTER_TOKEN        Access token (default: auto-generated)"
-    echo "  JUPYTER_PASSWORD     Access password (default: none)"
-    echo "  JUPYTER_EXTRA_ARGS   Additional Jupyter arguments"
-    echo "  BUILD_TYPE           'production', 'development', 'testing'"
-    echo "  DEBUG                Enable debug output (default: false)"
-    echo "  ALLOW_ORIGIN         Allow CORS origin (default: none)"
-    echo ""
-    echo -e "${CYAN}Examples:${NC}"
-    echo "  # Run Jupyter Notebook"
-    echo "  docker run -p 8888:8888 datamind-notebook"
-    echo ""
-    echo "  # Run JupyterLab with custom token"
-    echo "  docker run -p 8888:8888 -e JUPYTER_MODE=lab -e JUPYTER_TOKEN=secret datamind-notebook"
-    echo ""
-    echo "  # Run with custom user ID (fix permission issues)"
-    echo "  docker run -p 8888:8888 -e NB_UID=\$(id -u) -e NB_GID=\$(id -g) -v \$(pwd):/home/jovyan/workspace datamind-notebook"
-    echo ""
-    echo "  # Execute custom command"
-    echo "  docker run --rm datamind-notebook python --version"
-    echo ""
-    echo -e "${CYAN}More information:${NC}"
-    echo "  https://github.com/your-repo/datamind-notebook"
+    cat << EOF
+${CYAN}Usage:${NC}
+  docker run [OPTIONS] datamind-notebook [COMMAND] [ARGS...]
+
+${CYAN}Environment Variables:${NC}
+  NB_USER              Username (default: jovyan)
+  NB_UID               User ID (default: 1000)
+  NB_GID               Group ID (default: 1000)
+  JUPYTER_IP           IP to bind (default: 0.0.0.0)
+  JUPYTER_PORT         Port to listen on (default: 8888)
+  JUPYTER_DIR          Working directory (default: /home/jovyan/workspace)
+  JUPYTER_MODE         'notebook' or 'lab' (default: notebook)
+  JUPYTER_TOKEN        Access token (default: auto-generated)
+  JUPYTER_PASSWORD     Access password (default: none)
+  JUPYTER_EXTRA_ARGS   Additional Jupyter arguments
+  BUILD_TYPE           'production', 'development', 'testing'
+  DEBUG                Enable debug output (default: false)
+  ALLOW_ORIGIN         Allow CORS origin (default: none)
+  TZ                   Timezone (default: Asia/Shanghai)
+
+${CYAN}Examples:${NC}
+  # Run Jupyter Notebook
+  docker run -p 8888:8888 datamind-notebook
+
+  # Run JupyterLab with custom token
+  docker run -p 8888:8888 -e JUPYTER_MODE=lab -e JUPYTER_TOKEN=secret datamind-notebook
+
+  # Run with custom user ID (fix permission issues)
+  docker run -p 8888:8888 -e NB_UID=\$(id -u) -e NB_GID=\$(id -g) -v \$(pwd):/home/jovyan/workspace datamind-notebook
+
+  # Execute custom command
+  docker run --rm datamind-notebook python --version
+
+${CYAN}More information:${NC}
+  https://github.com/your-repo/datamind-notebook
+EOF
     exit 0
 }
 
@@ -109,27 +113,26 @@ print_banner() {
     echo -e "${CYAN}#######################################################${NC}"
     
     # 版本信息
-    if [ -n "${VERSION}" ] || [ -n "${BUILD_TIME}" ] || [ -n "${GIT_COMMIT}" ] || [ -n "${BUILD_TYPE}" ]; then
-        echo -e "${CYAN} 📦 Build Information${NC}"
-        [ -n "${VERSION}" ] && echo -e "${CYAN}     Version    : ${GREEN}${VERSION}${CYAN}${NC}"
-        [ -n "${BUILD_TIME}" ] && echo -e "${CYAN}     Build Time : ${YELLOW}${BUILD_TIME}${CYAN}${NC}"
-        [ -n "${GIT_COMMIT}" ] && echo -e "${CYAN}     Git Commit : ${PURPLE}${GIT_COMMIT}${CYAN}${NC}"
-        [ -n "${BUILD_TYPE}" ] && echo -e "${CYAN}     Build Type : ${BLUE}${BUILD_TYPE}${CYAN}${NC}"
-    fi
+    echo -e "\n${CYAN}📦 Build Information${NC}"
+    printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "Version" "${VERSION:-unknown}"
+    printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Build Date" "${BUILD_DATE:-unknown}"
+    printf "${CYAN}   %-12s: ${PURPLE}%s${NC}\n" "Git Commit" "${GIT_COMMIT:-unknown}"
+    printf "${CYAN}   %-12s: ${BLUE}%s${NC}\n" "Build Type" "${BUILD_TYPE:-production}"
     
     # 系统信息
-    echo -e "${CYAN} 🖥️ System Information${NC}"
-    echo -e "${CYAN}     Hostname  : ${GREEN}$(hostname)${CYAN}${NC}"
-    echo -e "${CYAN}     User      : ${GREEN}${NB_USER:-jovyan}${CYAN}${NC}"
-    echo -e "${CYAN}     Work Dir  : ${YELLOW}${JUPYTER_DIR:-/home/jovyan/workspace}${CYAN}${NC}"
-    echo -e "${CYAN}     Started   : ${BLUE}$(date '+%Y-%m-%d %H:%M:%S')${CYAN}${NC}"
+    echo -e "\n${CYAN}🖥️ System Information${NC}"
+    printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "Hostname" "$(hostname)"
+    printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "User" "${NB_USER:-jovyan}"
+    printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Work Dir" "${JUPYTER_DIR:-/home/jovyan/workspace}"
+    printf "${CYAN}   %-12s: ${BLUE}%s${NC}\n" "Started" "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf "${CYAN}   %-12s: ${PURPLE}%s${NC}\n" "Timezone" "${TZ:-Asia/Shanghai}"
     echo ""
 }
 
 # ==========================================
-# 设置环境变量（静默模式）
+# 设置环境变量
 # ==========================================
-setup_environment_silent() {
+setup_environment() {
     export NB_USER="${NB_USER:-jovyan}"
     export NB_UID="${NB_UID:-1000}"
     export NB_GID="${NB_GID:-1000}"
@@ -139,18 +142,31 @@ setup_environment_silent() {
     export JUPYTER_DIR="${JUPYTER_DIR:-${HOME}/workspace}"
     export DEBUG="${DEBUG:-false}"
     export JUPYTER_MODE="${JUPYTER_MODE:-notebook}"
+    export TZ="${TZ:-Asia/Shanghai}"
     
     # 确保 PATH 包含用户本地 bin 目录
     export PATH="${HOME}/.local/bin:${PATH}:/usr/local/bin"
-}
-
-# ==========================================
-# 设置环境变量（详细模式）
-# ==========================================
-setup_environment() {
-    setup_environment_silent
+    
+    # 设置时区
+    if [ "$(id -u)" = "0" ]; then
+        if [ -f "/usr/share/zoneinfo/${TZ}" ]; then
+            ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime 2>/dev/null || true
+            echo "${TZ}" > /etc/timezone 2>/dev/null || true
+            log_debug "System timezone set to: ${TZ}"
+        else
+            log_warn "Timezone file not found: /usr/share/zoneinfo/${TZ}, using UTC fallback"
+            ln -snf "/usr/share/zoneinfo/UTC" /etc/localtime 2>/dev/null || true
+            echo "UTC" > /etc/timezone 2>/dev/null || true
+        fi
+    else
+        # 没有root权限时，只设置环境变量
+        log_debug "Running without root privileges, timezone set via environment: ${TZ}"
+        # Python 应用会通过环境变量 TZ 使用时区
+    fi
+    
     log_debug "Environment: NB_USER=${NB_USER}, NB_UID=${NB_UID}, NB_GID=${NB_GID}"
     log_debug "PATH: ${PATH}"
+    log_debug "TZ: ${TZ}"
 }
 
 # ==========================================
@@ -164,7 +180,15 @@ fix_permissions() {
         if [ "${silent}" != "true" ]; then
             log_debug "Fixing permissions for: ${target_dir}"
         fi
-        /usr/local/bin/fix-permissions "${target_dir}" 2>/dev/null || true
+        if command -v /usr/local/bin/fix-permissions &> /dev/null; then
+            /usr/local/bin/fix-permissions "${target_dir}" 2>/dev/null || true
+        else
+            # 备用的权限修复方法
+            if [ "$(id -u)" = "0" ]; then
+                chown -R "${NB_USER}:${NB_GID}" "${target_dir}" 2>/dev/null || true
+                chmod -R u+rwX,go+rX,go-w "${target_dir}" 2>/dev/null || true
+            fi
+        fi
     else
         if [ "${silent}" != "true" ]; then
             log_warn "Directory does not exist, skipping: ${target_dir}"
@@ -189,37 +213,9 @@ ensure_directory() {
     fi
     
     if [ "$(id -u)" = "0" ]; then
-        chown -R ${owner}:${group} "${dir}" 2>/dev/null || true
+        chown -R "${owner}:${group}" "${dir}" 2>/dev/null || true
+        chmod -R u+rwX,go+rX,go-w "${dir}" 2>/dev/null || true
     fi
-}
-
-# ==========================================
-# 检查 jupyter 是否可用（静默模式）
-# ==========================================
-check_jupyter_silent() {
-    if ! command -v jupyter &> /dev/null; then
-        # 检查常见位置
-        local jupyter_locations=(
-            "${HOME}/.local/bin/jupyter"
-            "/usr/local/bin/jupyter"
-            "/usr/bin/jupyter"
-        )
-        
-        local jupyter_found=""
-        for pattern in "${jupyter_locations[@]}"; do
-            if [ -x "${pattern}" ]; then
-                jupyter_found="${pattern}"
-                break
-            fi
-        done
-        
-        if [ -n "${jupyter_found}" ]; then
-            export PATH="$(dirname "${jupyter_found}"):${PATH}"
-        else
-            return 1
-        fi
-    fi
-    return 0
 }
 
 # ==========================================
@@ -236,19 +232,15 @@ check_jupyter() {
             "${HOME}/.local/bin/jupyter"
             "/usr/local/bin/jupyter"
             "/usr/bin/jupyter"
-            "${HOME}/.local/lib/python*/site-packages/jupyter.py"
         )
         
         local jupyter_found=""
-        for pattern in "${jupyter_locations[@]}"; do
-            # 使用通配符展开
-            for path in $pattern; do
-                if [ -x "${path}" ]; then
-                    jupyter_found="${path}"
-                    log_debug "Found jupyter at: ${path}"
-                    break 2
-                fi
-            done
+        for location in "${jupyter_locations[@]}"; do
+            if [ -x "${location}" ]; then
+                jupyter_found="${location}"
+                log_debug "Found jupyter at: ${location}"
+                break
+            fi
         done
         
         if [ -n "${jupyter_found}" ]; then
@@ -257,15 +249,14 @@ check_jupyter() {
         else
             log_error "jupyter not found in any standard location"
             log_info "Installed packages:"
-            pip list --format=freeze | grep -E "jupyter|notebook|ipython|ipykernel" || true
+            pip list --format=freeze 2>/dev/null | grep -E "jupyter|notebook|ipython|ipykernel" || true
             return 1
         fi
     fi
     
     # 显示版本信息
     log_debug "Jupyter version information:"
-    local version_output=$(jupyter --version 2>&1 | sed 's/^/  /')
-    log_debug "${version_output}"
+    jupyter --version 2>&1 | sed 's/^/  /' | while read line; do log_debug "$line"; done
     
     return 0
 }
@@ -292,9 +283,11 @@ c.ServerApp.ip = '${JUPYTER_IP}'
 c.ServerApp.port = ${JUPYTER_PORT}
 c.ServerApp.notebook_dir = '${JUPYTER_DIR}'
 c.ServerApp.open_browser = False
-c.ServerApp.allow_origin = '*'
 c.ServerApp.trust_xheaders = True
 c.ServerApp.terminado_settings = {'shell_command': ['/bin/bash']}
+c.ServerApp.allow_origin = '${ALLOW_ORIGIN:-*}'
+c.ServerApp.allow_remote_access = True
+c.IdentityProvider.token = '${JUPYTER_TOKEN:-}'
 EOF
     fi
 }
@@ -372,8 +365,12 @@ format_runtime() {
     local seconds=$1
     local minutes=$((seconds / 60))
     local remaining_seconds=$((seconds % 60))
+    local hours=$((minutes / 60))
+    local remaining_minutes=$((minutes % 60))
     
-    if [ ${minutes} -gt 0 ]; then
+    if [ ${hours} -gt 0 ]; then
+        echo "${hours}h ${remaining_minutes}m ${remaining_seconds}s"
+    elif [ ${minutes} -gt 0 ]; then
         echo "${minutes}m ${remaining_seconds}s"
     else
         echo "${remaining_seconds}s"
@@ -487,8 +484,14 @@ watch_child() {
 # 快速执行模式 - 直接执行命令，没有任何输出
 # ==========================================
 quick_exec() {
+    # 检查是否有参数
+    if [ $# -eq 0 ]; then
+        log_error "quick_exec called without arguments"
+        return 1
+    fi
+    
     # 只设置必要的环境变量，不输出任何日志
-    setup_environment_silent
+    setup_environment
     
     # 如果需要以 root 运行，切换到普通用户
     if [ "$(id -u)" = "0" ]; then
@@ -497,7 +500,7 @@ quick_exec() {
         ensure_directory "${JUPYTER_DIR}" "${NB_USER}" "${NB_GID}" "true" 2>/dev/null || true
         
         # 切换到普通用户执行命令
-        exec su -l "${NB_USER}" -c "cd '${JUPYTER_DIR}' && exec $@"
+        exec su -l "${NB_USER}" -c "cd '${JUPYTER_DIR}' && exec $*"
     else
         # 直接执行命令
         cd "${JUPYTER_DIR}" 2>/dev/null || true
@@ -509,15 +512,17 @@ quick_exec() {
 # 主函数
 # ==========================================
 main() {
-    # 检查是否需要显示帮助
-    if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "help" ]; then
-        show_help
-    fi
-    
-    # 如果有参数（用户指定了要执行的命令），直接执行，不显示任何 banner 和日志；
-    # 没有参数时，正常启动 Jupyter 服务
+    # 检查是否需要显示帮助（先检查参数数量）
     if [ $# -gt 0 ]; then
+        if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "help" ]; then
+            show_help
+        fi
+        # 如果有参数，直接执行命令
         quick_exec "$@"
+        # quick_exec 应该用 exec 执行，不会返回这里
+        # 如果返回，说明执行失败
+        log_error "Failed to execute command: $*"
+        exit 1
     fi
     
     # 设置信号处理
@@ -529,11 +534,11 @@ main() {
     # 忽略 SIGPIPE
     trap '' PIPE
     
-    # 打印 Banner
-    print_banner
-    
     # 设置环境变量
     setup_environment
+    
+    # 打印 Banner
+    print_banner
     
     # 如果以 root 运行
     if [ "$(id -u)" = "0" ]; then
@@ -556,7 +561,7 @@ main() {
         log_info "Switching to user: ${NB_USER} (uid: ${NB_UID}, gid: ${NB_GID})"
         
         # 切换到普通用户执行
-        exec su -l "${NB_USER}" -c "cd '${JUPYTER_DIR}' && exec $0 $@"
+        exec su -l "${NB_USER}" -c "cd '${JUPYTER_DIR}' && exec $0"
     fi
     
     # 以普通用户运行
@@ -574,16 +579,16 @@ main() {
     fi
     
     # 构建 Jupyter 启动命令
-    local jupyter_cmd="jupyter"
     local jupyter_args=()
+    local jupyter_mode_desc=""
     
     # 确定启动模式
     if [ "${JUPYTER_MODE}" = "lab" ]; then
-        jupyter_cmd="jupyter lab"
-        log_info "Starting in JupyterLab mode"
+        jupyter_args+=("lab")
+        jupyter_mode_desc="JupyterLab"
     else
-        jupyter_cmd="jupyter notebook"
-        log_info "Starting in Jupyter Notebook mode"
+        jupyter_args+=("notebook")
+        jupyter_mode_desc="Jupyter Notebook"
     fi
     
     # 添加基本参数
@@ -591,46 +596,50 @@ main() {
     jupyter_args+=("--port=${JUPYTER_PORT}")
     jupyter_args+=("--no-browser")
     jupyter_args+=("--notebook-dir=${JUPYTER_DIR}")
+    jupyter_args+=("--ServerApp.trust_xheaders=True")
+    jupyter_args+=("--ServerApp.allow_remote_access=True")
     
     # 添加 token/密码配置
-    if [ -n "${JUPYTER_TOKEN}" ]; then
+    if [ -n "${JUPYTER_TOKEN:-}" ]; then
         jupyter_args+=("--IdentityProvider.token=${JUPYTER_TOKEN}")
         log_info "Using provided JUPYTER_TOKEN"
-    elif [ -n "${JUPYTER_PASSWORD}" ]; then
+    elif [ -n "${JUPYTER_PASSWORD:-}" ]; then
         jupyter_args+=("--IdentityProvider.password=${JUPYTER_PASSWORD}")
         log_info "Using provided JUPYTER_PASSWORD"
     fi
     
     # 允许跨域（开发环境）
-    if [ "${BUILD_TYPE}" = "development" ] || [ "${ALLOW_ORIGIN}" = "*" ]; then
+    if [ "${BUILD_TYPE}" = "development" ] || [ "${ALLOW_ORIGIN:-}" = "*" ]; then
         jupyter_args+=("--ServerApp.allow_origin=*")
-        jupyter_args+=("--debug")
+        if [ "${BUILD_TYPE}" = "development" ]; then
+            jupyter_args+=("--debug")
+        fi
         log_warn "Running in development mode with CORS disabled"
+    elif [ -n "${ALLOW_ORIGIN:-}" ]; then
+        jupyter_args+=("--ServerApp.allow_origin=${ALLOW_ORIGIN}")
     fi
     
     # 添加额外的 Jupyter 参数
-    if [ -n "${JUPYTER_EXTRA_ARGS}" ]; then
-        for arg in ${JUPYTER_EXTRA_ARGS}; do
-            jupyter_args+=("${arg}")
-        done
+    if [ -n "${JUPYTER_EXTRA_ARGS:-}" ]; then
+        eval "jupyter_args+=(${JUPYTER_EXTRA_ARGS})"
     fi
     
     # 显示启动信息
-    log_success "Starting Jupyter server..."
+    log_success "Starting ${jupyter_mode_desc} server..."
     echo ""
-    echo " Jupyter Server Configuration:"
-    echo "  • Mode: ${jupyter_cmd}"
-    echo "  • IP: ${JUPYTER_IP}"
-    echo "  • Port: ${JUPYTER_PORT}"
-    echo "  • Directory: ${JUPYTER_DIR}"
-    if [ -z "${JUPYTER_TOKEN}" ] && [ -z "${JUPYTER_PASSWORD}" ]; then
-        echo "  • Token: Auto-generated (see below)"
+    echo " ${CYAN}Jupyter Server Configuration:${NC}"
+    echo "   • Mode: ${jupyter_mode_desc}"
+    echo "   • IP: ${JUPYTER_IP}"
+    echo "   • Port: ${JUPYTER_PORT}"
+    echo "   • Directory: ${JUPYTER_DIR}"
+    if [ -z "${JUPYTER_TOKEN:-}" ] && [ -z "${JUPYTER_PASSWORD:-}" ]; then
+        echo "   • Token: Auto-generated (see below)"
     fi
     echo ""
     
     # 执行 Jupyter
-    log_debug "Executing: ${jupyter_cmd} ${jupyter_args[*]}"
-    exec ${jupyter_cmd} "${jupyter_args[@]}"
+    log_debug "Executing: jupyter ${jupyter_args[*]}"
+    exec jupyter "${jupyter_args[@]}"
 }
 
 # ==========================================

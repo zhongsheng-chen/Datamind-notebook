@@ -62,6 +62,7 @@ GIT_DESCRIBE = $(shell git describe --tags --always 2>/dev/null || echo "dev-$(G
 TIMESTAMP = $(shell date +%Y%m%d%H%M%S)
 BUILD_TIME = $(shell date +"%Y-%m-%d %H:%M:%S")
 BUILD_DATETIME = $(shell date +"%Y-%m-%dT%H:%M:%S%z")
+BUILD_DATE = $(shell date +"%Y-%m-%d (%A)")
 VERSION ?= $(if $(GIT_TAG),$(GIT_TAG),$(GIT_DESCRIBE))
 BUILD_METADATA = $(BUILD_TYPE).$(TIMESTAMP).$(GIT_COMMIT)
 
@@ -79,7 +80,8 @@ export DOCKER_BUILDKIT=1
 export COMPOSE_DOCKER_CLI_BUILD=1
 
 # ==================== 构建参数 ====================
-BUILD_ARGS = \
+# 可缓存的构建参数（不含时间变量）
+BUILD_ARGS_CACHEABLE = \
 	--build-arg BUILD_TYPE=$(BUILD_TYPE) \
 	--build-arg PIP_INDEX_URL=$(PIP_INDEX_URL) \
 	--build-arg PIP_TRUSTED_HOST=$(PIP_TRUSTED_HOST) \
@@ -88,9 +90,14 @@ BUILD_ARGS = \
 	--build-arg INSTALL_DEV_TOOLS=$(INSTALL_DEV_TOOLS) \
 	--build-arg CLEAN_BUILD_DEPS=$(CLEAN_BUILD_DEPS) \
 	--build-arg VERSION="$(VERSION)" \
-	--build-arg BUILD_TIME="$(BUILD_TIME)" \
-	--build-arg BUILD_DATETIME="$(BUILD_DATETIME)" \
-	--build-arg GIT_COMMIT=$(GIT_COMMIT)
+	--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+	--build-arg BUILD_DATE="$(BUILD_DATE)"
+
+# 标签参数（不影响缓存）
+LABEL_ARGS = \
+	--label build.time="$(BUILD_TIME)" \
+	--label build.datetime="$(BUILD_DATETIME)" \
+	--label timestamp="$(TIMESTAMP)"
 
 # 标签
 TAGS = -t $(IMAGE_NAME):latest \
@@ -126,27 +133,33 @@ help:
 	@echo "$(CYAN)==========================================================$(NC)"
 	@echo ""
 	@echo "$(YELLOW)基础构建:$(NC)"
-	@echo "  make build                           - 使用当前配置构建（默认production）"
-	@echo "  make build-dev                       - 构建开发环境"
-	@echo "  make build-test                      - 构建测试环境"
-	@echo "  make build-prod                      - 构建生产环境"
+	@echo "  make build                            - 使用当前配置构建（默认production）"
+	@echo "  make build-dev                        - 构建开发环境"
+	@echo "  make build-test                       - 构建测试环境"
+	@echo "  make build-prod                       - 构建生产环境"
 	@echo ""
 	@echo "$(YELLOW)无缓存构建:$(NC)"
-	@echo "  make build-nocache                   - 无缓存构建（默认production）"
-	@echo "  make build-dev-nocache               - 无缓存构建开发环境"
-	@echo "  make build-test-nocache              - 无缓存构建测试环境"
-	@echo "  make build-prod-nocache              - 无缓存构建生产环境"
+	@echo "  make build-nocache                    - 无缓存构建（默认production）"
+	@echo "  make build-dev-nocache                - 无缓存构建开发环境"
+	@echo "  make build-test-nocache               - 无缓存构建测试环境"
+	@echo "  make build-prod-nocache               - 无缓存构建生产环境"
 	@echo ""
 	@echo "$(YELLOW)镜像源选择:$(NC)"
-	@echo "  make build-tsinghua                  - 使用清华源"
-	@echo "  make build-aliyun                    - 使用阿里源"
-	@echo "  make build-official                  - 使用官方源"
-	@echo "  make build-mirror URL=xxx HOST=xxx   - 使用自定义镜像源"
+	@echo "  make build-tsinghua                   - 使用清华源"
+	@echo "  make build-tsinghua-nocache           - 无缓存构建使用清华源"
+	@echo "  make build-aliyun                     - 使用阿里源"
+	@echo "  make build-aliyun-nocache             - 无缓存构建使用阿里源"
+	@echo "  make build-official                   - 使用官方源"
+	@echo "  make build-official-nocache           - 无缓存构建使用官方源"
+	@echo "  make build-mirror URL=xxx HOST=xxx    - 使用自定义镜像源"
+	@echo "  make build-mirror-nocache             - 无缓存构建使用自定义镜像源"
 	@echo ""
 	@echo "$(YELLOW)高级构建:$(NC)"
-	@echo "  make build-with-apt PKGS='pkg1 pkg2' - 安装额外APT包"
-	@echo "  make build-clean-deps=false          - 保留构建依赖"
+	@echo "  make build-with-apt PKGS='pkg1 pkg2'  - 安装额外APT包"
+	@echo "  make build-with-apt-nocache           - 无缓存构建安装额外APT包"
+	@echo "  make build-clean-deps=false           - 保留构建依赖"
 	@echo "  make build-dev-tools                  - 安装开发工具"
+	@echo "  make build-dev-tools-nocache          - 无缓存构建安装开发工具"
 	@echo "  make build-with-token TOKEN=xxx       - 构建时使用私有源（需要token）"
 	@echo ""
 	@echo "$(YELLOW)运行命令:$(NC)"
@@ -154,13 +167,14 @@ help:
 	@echo "  make run-dev                          - 运行开发容器（带调试）"
 	@echo "  make run-lab                          - 运行 JupyterLab"
 	@echo "  make run-with-token TOKEN=xxx         - 使用指定token运行"
+	@echo "  make run-background                   - 后台运行容器"
 	@echo "  make shell                            - 进入容器shell"
 	@echo "  make logs                             - 查看容器日志"
 	@echo "  make stop                             - 停止容器"
 	@echo ""
 	@echo "$(YELLOW)镜像管理:$(NC)"
 	@echo "  make save                             - 保存镜像到文件"
-	@echo "  make load                             - 从文件加载镜像"
+	@echo "  make load FILE=xxx.tar.gz             - 从文件加载镜像"
 	@echo "  make push                             - 推送镜像到仓库"
 	@echo "  make pull                             - 拉取镜像"
 	@echo "  make version                          - 显示版本信息"
@@ -172,25 +186,29 @@ help:
 	@echo "  make builder-use                      - 使用多架构构建器"  
 	@echo "  make builder-stop                     - 停止构建器"
 	@echo "  make builder-rm                       - 删除构建器"
-	@echo "  make build-multi                      - 构建多架构镜像（本地加载）"
+	@echo "  make build-multi                      - 构建多架构镜像（到缓存）"
 	@echo "  make build-multi-push                 - 构建并推送多架构镜像"
-	@echo "  make build-multi-dev                  - 构建多架构开发镜像"
-	@echo "  make build-multi-prod                 - 构建多架构生产镜像"
-	@echo "  make build-multi-test                 - 构建多架构测试镜像"
-	@echo ""
-	@echo "$(YELLOW)其他:$(NC)"
-	@echo "  make clean                            - 清理镜像"
-	@echo "  make clean-all                        - 清理所有镜像和缓存"
-	@echo "  make test                             - 测试镜像"
-	@echo "  make show-info                        - 显示当前配置"
+	@echo "  make build-multi-local                - 本地构建（当前平台）"
+	@echo "  make build-multi-dev                  - 构建多架构开发镜像并推送"
+	@echo "  make build-multi-prod                 - 构建多架构生产镜像并推送"
+	@echo "  make build-multi-test                 - 构建多架构测试镜像并推送"
 	@echo ""
 	@echo "$(YELLOW)多架构查看:$(NC)"
 	@echo "  make inspect-multi                    - 查看当前版本多架构镜像信息"
-	@echo "  make inspect-multi-latest              - 查看最新多架构镜像信息"
-	@echo "  make inspect-multi-raw                 - 查看多架构镜像原始 Manifest"
-	@echo "  make list-builders                     - 查看所有构建器"
-	@echo "  make inspect-builder                    - 查看当前构建器详细信息"
-	@echo "  make inspect-builder-cache              - 查看构建器缓存使用情况"
+	@echo "  make inspect-multi-latest             - 查看最新多架构镜像信息"
+	@echo "  make inspect-multi-raw                - 查看多架构镜像原始 Manifest"
+	@echo "  make list-builders                    - 查看所有构建器"
+	@echo "  make inspect-builder                  - 查看当前构建器详细信息"
+	@echo "  make inspect-builder-cache            - 查看构建器缓存使用情况"
+	@echo ""
+	@echo "$(YELLOW)测试和清理:$(NC)"
+	@echo "  make test                             - 测试镜像"
+	@echo "  make clean                            - 清理镜像"
+	@echo "  make clean-all                        - 清理所有镜像和缓存"
+	@echo ""
+	@echo "$(YELLOW)信息显示:$(NC)"
+	@echo "  make show-info                        - 显示当前配置"
+	@echo "  make version                          - 显示镜像版本信息"
 	@echo "$(CYAN)==========================================================$(NC)"
 
 # ==================== 基础构建 ====================
@@ -198,7 +216,7 @@ build:
 	@echo "$(CYAN)==========================================================$(NC)"
 	@echo "$(GREEN)构建配置:$(NC)"
 	@echo "  $(YELLOW)BUILD_TYPE:$(NC) $(BUILD_TYPE)"
-	@echo "  $(YELLOW)BUILD_TIME:$(NC) $(BUILD_TIME)"
+	@echo "  $(YELLOW)BUILD_DATE:$(NC) $(BUILD_DATE)"
 	@echo "  $(YELLOW)PIP_INDEX_URL:$(NC) $(PIP_INDEX_URL)"
 	@echo "  $(YELLOW)PIP_TRUSTED_HOST:$(NC) $(PIP_TRUSTED_HOST)"
 	@echo "  $(YELLOW)NO_CACHE:$(NC) $(NO_CACHE)"
@@ -209,7 +227,8 @@ build:
 	@echo "  $(YELLOW)GIT_COMMIT:$(NC) $(GIT_COMMIT)"
 	@echo "$(CYAN)==========================================================$(NC)"
 	docker build $(CACHE_OPTION) \
-		$(BUILD_ARGS) \
+		$(BUILD_ARGS_CACHEABLE) \
+		$(LABEL_ARGS) \
 		$(TAGS) \
 		.
 	@echo "$(GREEN)✓ 构建完成！$(NC)"
@@ -387,8 +406,38 @@ stop:
 # ==================== 镜像管理 ====================
 save:
 	@echo "$(GREEN)保存镜像到文件...$(NC)"
-	docker save $(IMAGE_NAME):latest | gzip > $(IMAGE_NAME)-$(VERSION).tar.gz
-	@echo "$(GREEN)✓ 已保存到 $(IMAGE_NAME)-$(VERSION).tar.gz$(NC)"
+	$(eval SAVE_FILE := $(IMAGE_NAME)-$(VERSION).tar.gz)
+	$(eval IMAGE_SIZE := $(shell docker image inspect $(IMAGE_NAME):latest --format='{{.Size}}' | awk '{printf "%.2f MB", $$1/1024/1024}'))
+	$(eval ORIGINAL_SIZE_BYTES := $(shell docker image inspect $(IMAGE_NAME):latest --format='{{.Size}}'))
+	@echo "  $(YELLOW)镜像:$(NC) $(IMAGE_NAME):latest ($(IMAGE_SIZE))"
+	@echo "  $(YELLOW)保存到:$(NC) $(SAVE_FILE)"
+	@echo "  $(YELLOW)正在保存，请稍候...$(NC)"
+	
+	@# 检查 pv 是否安装，如果安装则显示进度，否则直接保存
+	@if command -v pv >/dev/null 2>&1; then \
+		docker save $(IMAGE_NAME):latest | pv -s $(ORIGINAL_SIZE_BYTES) | gzip > $(SAVE_FILE); \
+	else \
+		docker save $(IMAGE_NAME):latest | gzip > $(SAVE_FILE); \
+	fi
+	
+	@# 获取文件信息
+	$(eval FILE_SIZE := $(shell du -h $(SAVE_FILE) | cut -f1))
+	$(eval FILE_SIZE_BYTES := $(shell stat -c%s $(SAVE_FILE) 2>/dev/null || stat -f%z $(SAVE_FILE) 2>/dev/null))
+	$(eval COMPRESSION_RATIO := $(shell echo "scale=2; $(FILE_SIZE_BYTES)*100/$(ORIGINAL_SIZE_BYTES)" | bc 2>/dev/null || echo "N/A"))
+	$(eval CREATE_TIME := $(shell date -r $(SAVE_FILE) +"%Y-%m-%d %H:%M:%S" 2>/dev/null || date))
+	
+	@echo "$(GREEN)✓ 镜像保存成功！$(NC)"
+	@echo "  $(YELLOW)文件名称:$(NC) $(SAVE_FILE)"
+	@echo "  $(YELLOW)文件大小:$(NC) $(FILE_SIZE) ($(FILE_SIZE_BYTES) 字节)"
+	@echo "  $(YELLOW)原始大小:$(NC) $(IMAGE_SIZE) ($(ORIGINAL_SIZE_BYTES) 字节)"
+	@echo "  $(YELLOW)压缩率:$(NC) $(COMPRESSION_RATIO)%"
+	@echo "  $(YELLOW)文件路径:$(NC) $(PWD)/$(SAVE_FILE)"
+	@echo "  $(YELLOW)创建时间:$(NC) $(CREATE_TIME)"
+	@echo ""
+	@echo "  $(CYAN)加载此镜像:$(NC)"
+	@echo "    make load FILE=$(SAVE_FILE)"
+	@echo "    # 或直接使用 docker"
+	@echo "    docker load < $(SAVE_FILE)"
 
 load:
 	@if [ -z "$(FILE)" ]; then \
@@ -408,7 +457,8 @@ push:
 			--platform $(PLATFORMS) \
 			--push \
 			$(CACHE_OPTION) \
-			$(BUILD_ARGS) \
+			$(BUILD_ARGS_CACHEABLE) \
+			$(LABEL_ARGS) \
 			-t $(FULL_IMAGE_NAME):$(VERSION) \
 			-t $(FULL_IMAGE_NAME):latest \
 			-t $(FULL_IMAGE_NAME):$(BUILD_TYPE) \
@@ -559,7 +609,8 @@ build-multi:
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		$(CACHE_OPTION) \
-		$(BUILD_ARGS) \
+		$(BUILD_ARGS_CACHEABLE) \
+		$(LABEL_ARGS) \
 		$(TAGS) \
 		.
 	@echo "$(GREEN)✓ 多架构构建完成！$(NC)"
@@ -594,7 +645,8 @@ build-multi-push:
 		--platform $(PLATFORMS) \
 		--push \
 		$(CACHE_OPTION) \
-		$(BUILD_ARGS) \
+		$(BUILD_ARGS_CACHEABLE) \
+		$(LABEL_ARGS) \
 		-t $(FULL_IMAGE_NAME):$(VERSION) \
 		-t $(FULL_IMAGE_NAME):latest \
 		-t $(FULL_IMAGE_NAME):$(BUILD_TYPE) \
@@ -630,7 +682,8 @@ build-multi-local:
 		--platform $(DEFAULT_PLATFORM) \
 		--load \
 		$(CACHE_OPTION) \
-		$(BUILD_ARGS) \
+		$(BUILD_ARGS_CACHEABLE) \
+		$(LABEL_ARGS) \
 		$(TAGS) \
 		.
 	@echo "$(GREEN)✓ 本地构建完成！$(NC)"

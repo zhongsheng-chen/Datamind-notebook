@@ -25,7 +25,7 @@ ARG NB_GID=1000
 
 # 版本信息
 ARG VERSION=latest
-ARG BUILD_TIME
+ARG BUILD_DATE
 ARG GIT_COMMIT
 
 # ==================== 环境变量 ====================
@@ -41,7 +41,7 @@ ENV TZ=Asia/Shanghai \
     NB_UID=${NB_UID} \
     NB_GID=${NB_GID} \
     BUILD_TYPE=${BUILD_TYPE} \
-    BUILD_TIME=${BUILD_TIME} \
+    BUILD_DATE=${BUILD_DATE} \
     VERSION=${VERSION} \
     GIT_COMMIT=${GIT_COMMIT} \
     PIP_INDEX_URL=${PIP_INDEX_URL} \
@@ -159,10 +159,11 @@ RUN /usr/local/bin/fix-permissions /home/${NB_USER}
 
 # ==================== 添加标签 ====================
 LABEL build.type=${BUILD_TYPE} \
-      build.time=${BUILD_TIME} \
       build.git_commit=${GIT_COMMIT} \
       build.version=${VERSION} \
       pip.index_url=${PIP_INDEX_URL} \
+      pip.trust_host=${PIP_TRUSTED_HOST} \
+      pip.extra_index_url=${PIP_EXTRA_INDEX_URL} \
       user.name=${NB_USER} \
       user.uid=${NB_UID}
 
