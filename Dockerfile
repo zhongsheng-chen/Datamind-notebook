@@ -154,8 +154,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 RUN /usr/local/bin/fix-permissions /home/${NB_USER}
 
 # 添加 sudo 权限配置（可选，允许用户安装系统包）
-RUN echo "${NB_USER} ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg, /usr/local/bin/fix-permissions" >> /etc/sudoers.d/${NB_USER} && \
-    chmod 0440 /etc/sudoers.d/${NB_USER}
+# RUN echo "${NB_USER} ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg, /usr/local/bin/fix-permissions" >> /etc/sudoers.d/${NB_USER} && \
+#     chmod 0440 /etc/sudoers.d/${NB_USER}
 
 # ==================== 添加标签 ====================
 LABEL build.type=${BUILD_TYPE} \
