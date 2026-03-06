@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 环境
+.env
+!.env.*
+
+# 数据
+data/
+temp/
+*.db
+*.sqlite
+
+# 构建产物
+dist/
+build/
+*.egg-info
