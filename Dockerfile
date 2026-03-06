@@ -1,7 +1,3 @@
-# ==========================================
-# 构建 Jupyter 镜像
-# ==========================================
-
 FROM python:3.10-slim
 
 LABEL maintainer="Zhongsheng Chen <zhongsheng.chen@outlook.com>"
@@ -28,6 +24,9 @@ ARG VERSION=latest
 ARG BUILD_DATE
 ARG GIT_COMMIT
 
+# 权限控制配置
+ARG GRANT_SUDO=no
+
 # ==================== 环境变量 ====================
 ENV TZ=Asia/Shanghai \
     PYTHONUNBUFFERED=1 \
@@ -47,7 +46,8 @@ ENV TZ=Asia/Shanghai \
     PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
     PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
-    HOME=/home/${NB_USER}
+    HOME=/home/${NB_USER} \
+    GRANT_SUDO=${GRANT_SUDO}
 
 # ==================== 创建用户和必要的目录 ====================
 RUN groupadd -g ${NB_GID} ${NB_USER} && \
@@ -72,9 +72,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     git \
-    # 添加权限管理工具
-    sudo \
-    acl \
+    gosu \
+    ca-certificates \
     ${EXTRA_APT_PACKAGES} \
     && if [ "${INSTALL_DEV_TOOLS}" = "true" ]; then \
         apt-get install -y --no-install-recommends \
@@ -84,7 +83,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         procps \
         tree; \
     fi \
-    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # ==================== 配置 pip 镜像源（针对所有用户） ====================
@@ -93,45 +91,33 @@ RUN echo "[global]" > /etc/pip.conf && \
     echo "trusted-host = ${PIP_TRUSTED_HOST}" >> /etc/pip.conf && \
     if [ -n "${PIP_EXTRA_INDEX_URL}" ]; then \
         echo "extra-index-url = ${PIP_EXTRA_INDEX_URL}" >> /etc/pip.conf; \
-    fi && \
-    # 同时为用户创建配置
-    mkdir -p /home/${NB_USER}/.config/pip && \
-    cp /etc/pip.conf /home/${NB_USER}/.config/pip/pip.conf && \
-    # 修复权限
-    /usr/local/bin/fix-permissions /home/${NB_USER}/.config
+    fi
+
+# ==================== 配置 sudo 权限 ====================
+RUN mkdir -p /etc/sudoers.d && \
+    echo "# Sudo rules for Jupyter user - controlled by GRANT_SUDO" > /etc/sudoers.d/jupyter && \
+    echo "# This file will be dynamically configured by entrypoint script" >> /etc/sudoers.d/jupyter && \
+    echo "Defaults env_keep += \"PYTHONPATH PYTHONUSERBASE\"" >> /etc/sudoers.d/jupyter && \
+    chmod 0440 /etc/sudoers.d/jupyter
 
 # ==================== 复制依赖文件 ====================
 COPY requirements.txt /tmp/requirements.txt
-RUN chown ${NB_USER}:${NB_USER} /tmp/requirements.txt
 
 # ==================== 安装 Python 依赖（使用非root用户执行安装） ====================
 USER ${NB_USER}
-WORKDIR /home/${NB_USER}/workspace
 
 # 升级 pip 并安装基础包
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip install --no-cache-dir -r /tmp/requirements.txt && \
-    pip install --no-cache-dir jupyter jupyterlab && \
-    # 根据环境安装额外包
+RUN --mount=type=cache,target=/home/${NB_USER}/.cache/pip,uid=${NB_UID},gid=${NB_GID} \
+    pip install --upgrade pip setuptools wheel && \
+    pip install jupyterlab notebook && \
+    pip install -r /tmp/requirements.txt && \
     if [ "${BUILD_TYPE}" = "development" ]; then \
-        pip install --no-cache-dir \
-        ipdb \
-        pytest \
-        pytest-cov \
-        black \
-        flake8 \
-        mypy \
-        pre-commit \
-        ipywidgets; \
+        pip install \
+        ipdb pytest pytest-cov black flake8 mypy pre-commit ipywidgets; \
     elif [ "${BUILD_TYPE}" = "testing" ]; then \
-        pip install --no-cache-dir \
-        pytest \
-        pytest-cov \
-        pytest-xdist; \
-    fi && \
-    # 清理 pip 缓存
-    pip cache purge && \
-    rm -rf /home/${NB_USER}/.cache/pip
+        pip install \
+        pytest pytest-cov pytest-xdist; \
+    fi
 
 # ==================== 清理构建依赖（需要root权限） ====================
 USER root
@@ -150,12 +136,13 @@ COPY config/jupyter_notebook_config.py /home/${NB_USER}/.jupyter/
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# 修复所有用户目录的权限
-RUN /usr/local/bin/fix-permissions /home/${NB_USER}
+# 复制健康检查脚本
+COPY scripts/healthcheck.py /usr/local/bin/healthcheck.py
+RUN chmod +x /usr/local/bin/healthcheck.py
 
-# 添加 sudo 权限配置（可选，允许用户安装系统包）
-# RUN echo "${NB_USER} ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg, /usr/local/bin/fix-permissions" >> /etc/sudoers.d/${NB_USER} && \
-#     chmod 0440 /etc/sudoers.d/${NB_USER}
+# 修复所有用户目录的权限
+RUN fix-permissions /home/${NB_USER} \
+ && fix-permissions /usr/local/bin/healthcheck.py
 
 # ==================== 添加标签 ====================
 LABEL build.type=${BUILD_TYPE} \
@@ -167,16 +154,16 @@ LABEL build.type=${BUILD_TYPE} \
       user.name=${NB_USER} \
       user.uid=${NB_UID}
 
+# ==================== 健康检查 ====================
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD /usr/local/bin/healthcheck.py
+
 # ==================== 切换回普通用户 ====================
 USER ${NB_USER}
-WORKDIR /home/${NB_USER}/workspace
+WORKDIR "${HOME}"
 
 # 暴露 Jupyter 端口
 EXPOSE 8888
-
-# 设置健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8888/api || exit 1
 
 # 设置入口点
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

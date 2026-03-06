@@ -4,13 +4,25 @@ set -euo pipefail
 # ==========================================
 # 颜色定义
 # ==========================================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+if [ -t 1 ] && [ "$TERM" != "dumb" ] && [ -x /usr/bin/tput ] && tput setaf 1 >&/dev/null; then
+    # 支持颜色的终端
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    PURPLE='\033[0;35m'
+    CYAN='\033[0;36m'
+    NC='\033[0m'
+else
+    # 不支持颜色的终端
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    PURPLE=''
+    CYAN=''
+    NC=''
+fi
 
 # ==========================================
 # 全局变量
@@ -78,6 +90,12 @@ ${CYAN}Environment Variables:${NC}
   DEBUG                Enable debug output (default: false)
   ALLOW_ORIGIN         Allow CORS origin (default: none)
   TZ                   Timezone (default: Asia/Shanghai)
+  
+${CYAN}Sudo Configuration:${NC}
+  GRANT_SUDO           Enable sudo access (yes/no, default: no)
+  SUDO_SCOPE           Sudo permission scope: none, limited, full (default: none)
+                       limited: allows apt-get, apt, dpkg, fix-permissions only
+                       full: allows all commands (same as GRANT_SUDO=yes)
 
 ${CYAN}Examples:${NC}
   # Run Jupyter Notebook
@@ -88,6 +106,12 @@ ${CYAN}Examples:${NC}
 
   # Run with custom user ID (fix permission issues)
   docker run -p 8888:8888 -e NB_UID=\$(id -u) -e NB_GID=\$(id -g) -v \$(pwd):/home/jovyan/workspace datamind-notebook
+
+  # Enable limited sudo for package installation (must run as root)
+  docker run --user root -e SUDO_SCOPE=limited -p 8888:8888 datamind-notebook
+
+  # Enable full sudo access
+  docker run --user root -e GRANT_SUDO=yes -p 8888:8888 datamind-notebook
 
   # Execute custom command
   docker run --rm datamind-notebook python --version
@@ -113,19 +137,31 @@ print_banner() {
     echo -e "${CYAN}#######################################################${NC}"
     
     # 版本信息
-    echo -e "\n${CYAN}📦 Build Information${NC}"
+    echo -e "\n${CYAN}  Build Information${NC}"
     printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "Version" "${VERSION:-unknown}"
     printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Build Date" "${BUILD_DATE:-unknown}"
     printf "${CYAN}   %-12s: ${PURPLE}%s${NC}\n" "Git Commit" "${GIT_COMMIT:-unknown}"
     printf "${CYAN}   %-12s: ${BLUE}%s${NC}\n" "Build Type" "${BUILD_TYPE:-production}"
     
     # 系统信息
-    echo -e "\n${CYAN}🖥️ System Information${NC}"
+    echo -e "\n${CYAN}  System Information${NC}"
     printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "Hostname" "$(hostname)"
     printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "User" "${NB_USER:-jovyan}"
     printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Work Dir" "${JUPYTER_DIR:-/home/jovyan/workspace}"
     printf "${CYAN}   %-12s: ${BLUE}%s${NC}\n" "Started" "$(date '+%Y-%m-%d %H:%M:%S')"
     printf "${CYAN}   %-12s: ${PURPLE}%s${NC}\n" "Timezone" "${TZ:-Asia/Shanghai}"
+    
+    # Sudo 信息
+    if [ "${GRANT_SUDO:-no}" = "yes" ] || [ "${GRANT_SUDO:-no}" = "1" ]; then
+        printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Sudo" "Enabled (full)"
+    elif [ "${SUDO_SCOPE:-none}" = "full" ]; then
+        printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Sudo" "Enabled (full)"
+    elif [ "${SUDO_SCOPE:-none}" = "limited" ]; then
+        printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Sudo" "Enabled (limited)"
+    else
+        printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "Sudo" "Disabled"
+    fi
+    
     echo ""
 }
 
@@ -143,6 +179,14 @@ setup_environment() {
     export DEBUG="${DEBUG:-false}"
     export JUPYTER_MODE="${JUPYTER_MODE:-notebook}"
     export TZ="${TZ:-Asia/Shanghai}"
+    export BUILD_TYPE="${BUILD_TYPE:-production}"
+    export BUILD_DATE="${BUILD_DATE:-unknown}"
+    export VERSION="${VERSION:-unknown}"
+    export GIT_COMMIT="${GIT_COMMIT:-unknown}"
+    
+    # Sudo 配置
+    export GRANT_SUDO="${GRANT_SUDO:-no}"
+    export SUDO_SCOPE="${SUDO_SCOPE:-none}"
     
     # 确保 PATH 包含用户本地 bin 目录
     export PATH="${HOME}/.local/bin:${PATH}:/usr/local/bin"
@@ -167,6 +211,7 @@ setup_environment() {
     log_debug "Environment: NB_USER=${NB_USER}, NB_UID=${NB_UID}, NB_GID=${NB_GID}"
     log_debug "PATH: ${PATH}"
     log_debug "TZ: ${TZ}"
+    log_debug "Sudo config: GRANT_SUDO=${GRANT_SUDO}, SUDO_SCOPE=${SUDO_SCOPE}"
 }
 
 # ==========================================
@@ -216,6 +261,93 @@ ensure_directory() {
         chown -R "${owner}:${group}" "${dir}" 2>/dev/null || true
         chmod -R u+rwX,go+rX,go-w "${dir}" 2>/dev/null || true
     fi
+}
+
+# ==========================================
+# 配置 sudo 权限
+# ==========================================
+configure_sudo() {
+    # 检查是否以 root 用户运行
+    if [ "$(id -u)" -ne 0 ]; then
+        if [ "${GRANT_SUDO}" = "yes" ] || [ "${GRANT_SUDO}" = "1" ] || [ "${SUDO_SCOPE}" != "none" ]; then
+            log_warn "Sudo requires root privileges. Please add '--user root' to docker run command"
+            log_warn "Sudo will NOT be available"
+        fi
+        return
+    fi
+    
+    local sudo_config_file="/etc/sudoers.d/jupyter"
+    
+    # 判断是否需要配置 sudo
+    if [ "${GRANT_SUDO}" = "yes" ] || [ "${GRANT_SUDO}" = "1" ]; then
+        log_info "GRANT_SUDO=yes detected, enabling sudo access"
+        
+        # 创建 sudoers.d 目录（如果不存在）
+        mkdir -p /etc/sudoers.d
+        
+        # 直接写入实际的 sudo 规则（覆盖原有内容）
+        cat > "${sudo_config_file}" << EOF
+# Jupyter sudo access - configured by entrypoint.sh at $(date)
+# GRANT_SUDO=${GRANT_SUDO}
+Defaults env_keep += "PYTHONPATH PYTHONUSERBASE JUPYTER_PATH"
+${NB_USER} ALL=(ALL) NOPASSWD:ALL
+EOF
+        
+        # 设置正确的权限
+        chmod 0440 "${sudo_config_file}"
+        log_success "Full sudo access granted to ${NB_USER} (passwordless)"
+        
+        # 验证 sudoers 文件语法
+        if visudo -c -f "${sudo_config_file}" 2>/dev/null; then
+            log_debug "Sudoers file syntax is valid"
+        else
+            log_error "Invalid sudoers file syntax:"
+            cat "${sudo_config_file}"
+        fi
+        
+    elif [ "${SUDO_SCOPE}" = "full" ]; then
+        log_info "SUDO_SCOPE=full detected, enabling full sudo access"
+        
+        mkdir -p /etc/sudoers.d
+        cat > "${sudo_config_file}" << EOF
+# Jupyter full sudo access - configured by entrypoint.sh at $(date)
+# SUDO_SCOPE=${SUDO_SCOPE}
+Defaults env_keep += "PYTHONPATH PYTHONUSERBASE JUPYTER_PATH"
+${NB_USER} ALL=(ALL) NOPASSWD:ALL
+EOF
+        chmod 0440 "${sudo_config_file}"
+        log_success "Full sudo access granted to ${NB_USER}"
+        
+    elif [ "${SUDO_SCOPE}" = "limited" ]; then
+        log_info "SUDO_SCOPE=limited detected, enabling limited sudo access"
+        
+        mkdir -p /etc/sudoers.d
+        cat > "${sudo_config_file}" << EOF
+# Jupyter limited sudo access - configured by entrypoint.sh at $(date)
+# SUDO_SCOPE=${SUDO_SCOPE}
+Defaults env_keep += "PYTHONPATH PYTHONUSERBASE JUPYTER_PATH"
+${NB_USER} ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/bin/apt, /usr/bin/dpkg, /usr/local/bin/fix-permissions, /bin/chown, /bin/chmod, /bin/mkdir, /bin/rm, /bin/cp, /bin/mv
+EOF
+        chmod 0440 "${sudo_config_file}"
+        log_success "Limited sudo access granted to ${NB_USER}"
+        log_info "Allowed commands: apt-get, apt, dpkg, fix-permissions, chown, chmod, mkdir, rm, cp, mv"
+        
+    else
+        # 不启用 sudo，但保留文件作为注释模板
+        log_info "Sudo not enabled, creating template only"
+        cat > "${sudo_config_file}" << EOF
+# Sudo rules for Jupyter user - controlled by GRANT_SUDO/SUDO_SCOPE
+# Current settings: GRANT_SUDO=${GRANT_SUDO}, SUDO_SCOPE=${SUDO_SCOPE}
+# To enable sudo, run with: -e GRANT_SUDO=yes or -e SUDO_SCOPE=full/limited
+Defaults env_keep += "PYTHONPATH PYTHONUSERBASE"
+# ${NB_USER} ALL=(ALL) NOPASSWD:ALL
+EOF
+        chmod 0440 "${sudo_config_file}"
+    fi
+    
+    # 显示最终的 sudoers 文件内容
+    log_debug "Final sudoers file content:"
+    log_debug "$(cat ${sudo_config_file} | sed 's/^/  /')"
 }
 
 # ==========================================
@@ -500,7 +632,7 @@ quick_exec() {
         ensure_directory "${JUPYTER_DIR}" "${NB_USER}" "${NB_GID}" "true" 2>/dev/null || true
         
         # 切换到普通用户执行命令
-        exec su -l "${NB_USER}" -c "cd '${JUPYTER_DIR}' && exec $*"
+        exec gosu "${NB_USER}" bash -c "cd '${JUPYTER_DIR}' && exec \"$@\""
     else
         # 直接执行命令
         cd "${JUPYTER_DIR}" 2>/dev/null || true
@@ -544,6 +676,9 @@ main() {
     if [ "$(id -u)" = "0" ]; then
         log_info "Running as root, setting up user environment..."
         
+        # 配置 sudo 权限
+        configure_sudo
+        
         # 修复用户家目录权限
         if [ -d "${HOME}" ]; then
             log_info "Fixing home directory permissions..."
@@ -561,7 +696,7 @@ main() {
         log_info "Switching to user: ${NB_USER} (uid: ${NB_UID}, gid: ${NB_GID})"
         
         # 切换到普通用户执行
-        exec su -l "${NB_USER}" -c "cd '${JUPYTER_DIR}' && exec $0"
+        exec gosu "${NB_USER}" bash -c "cd '${JUPYTER_DIR}' && exec $0"
     fi
     
     # 以普通用户运行
@@ -627,7 +762,7 @@ main() {
     # 显示启动信息
     log_success "Starting ${jupyter_mode_desc} server..."
     echo ""
-    echo " ${CYAN}Jupyter Server Configuration:${NC}"
+    echo -e  "${CYAN}Jupyter Server Configuration:${NC}"
     echo "   • Mode: ${jupyter_mode_desc}"
     echo "   • IP: ${JUPYTER_IP}"
     echo "   • Port: ${JUPYTER_PORT}"

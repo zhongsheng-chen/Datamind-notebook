@@ -1,5 +1,5 @@
 # ==========================================
-# Makefile - Datamind Jupyter Notebook Builder
+# Makefile
 # ==========================================
 
 .PHONY: help build build-dev build-test build-prod \
@@ -62,7 +62,7 @@ GIT_DESCRIBE = $(shell git describe --tags --always 2>/dev/null || echo "dev-$(G
 TIMESTAMP = $(shell date +%Y%m%d%H%M%S)
 BUILD_TIME = $(shell date +"%Y-%m-%d %H:%M:%S")
 BUILD_DATETIME = $(shell date +"%Y-%m-%dT%H:%M:%S%z")
-BUILD_DATE = $(shell date +"%Y-%m-%d (%A)")
+BUILD_DATE = $(shell date +"%Y-%m-%d")
 VERSION ?= $(if $(GIT_TAG),$(GIT_TAG),$(GIT_DESCRIBE))
 BUILD_METADATA = $(BUILD_TYPE).$(TIMESTAMP).$(GIT_COMMIT)
 

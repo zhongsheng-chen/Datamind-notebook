@@ -1,3 +1,4 @@
+
 # datamind-notebook
 
 克隆 Datamind 计算环境的 Jupyter Notebook 镜像，基于 Python 3.10-slim。
@@ -152,6 +153,25 @@ make build-multi-local
 make build-multi-dev
 make build-multi-prod
 make build-multi-test
+
+
+# 1. 创建并使用构建器
+make builder-create
+make builder-use
+
+# 2. 构建多架构镜像（到缓存）
+make build-multi
+
+# 3. 查看构建的镜像
+make inspect-multi
+
+# 4. 推送到仓库
+make build-multi-push
+make build-multi-push REGISTRY=docker.io OWNER=zhongshengchen
+
+# 5. 本地测试
+make build-multi-local
+make run
 
 
 
