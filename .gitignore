@@ -14,6 +14,11 @@ __pycache__/
 # 环境
 .env
 !.env.*
+.env.local
+.env.production
+.env.development
+.env.test
+.env.${BUILD_TYPE}
 
 # 数据
 data/
@@ -24,4 +29,9 @@ temp/
 # 构建产物
 dist/
 build/
-*.egg-info
+*.egg-info/
+*.egg
+*.whl
+*.so
+*.dylib
+*.dll

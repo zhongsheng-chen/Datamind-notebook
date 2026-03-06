@@ -8,13 +8,20 @@
         build-with-apt build-clean-deps build-dev-tools \
         run run-dev run-lab run-with-token shell logs stop \
         clean clean-all test show-info save load push pull \
-        version inspect history
+        version inspect history \
+        builder-create builder-use builder-stop builder-rm \
+        build-multi build-multi-push build-multi-dev build-multi-prod build-multi-test
 
 # ==================== 默认变量 ====================
-IMAGE_NAME = datamind-notebook
-REGISTRY ?= docker.io
-NAMESPACE ?= $(USER)
-FULL_IMAGE_NAME = $(REGISTRY)/$(NAMESPACE)/$(IMAGE_NAME)
+DEFAULT_REGISTRY  := docker.io
+DEFAULT_OWNER := zhongsheng
+DEFAULT_IMAGE_NAME := datamind-notebook
+
+REGISTRY  ?= $(DEFAULT_REGISTRY)
+OWNER ?= $(DEFAULT_OWNER)
+IMAGE_NAME ?= $(DEFAULT_IMAGE_NAME)
+
+FULL_IMAGE_NAME = $(REGISTRY)/$(OWNER)/$(IMAGE_NAME)
 PORT = 8888
 HOST_PORT ?= 8888
 VOLUME = $(PWD)/notebooks:/home/jovyan/workspace
@@ -40,10 +47,23 @@ INSTALL_DEV_TOOLS ?= false
 # 是否清理构建依赖
 CLEAN_BUILD_DEPS ?= true
 
+# 是否生成元数据标签
+NEED_METADATA ?= false
+
+# 多架构支持
+PLATFORMS ?= linux/amd64,linux/arm64
+DEFAULT_PLATFORM ?= linux/amd64
+BUILDX_BUILDER ?= datamind-builder
+
 # 版本信息
 GIT_COMMIT = $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-BUILD_TIME = $(shell date +%Y-%m-%d\ %H:%M:%S)
-VERSION = $(BUILD_TYPE)-$(shell date +%Y%m%d%H%M%S)-$(GIT_COMMIT)
+GIT_TAG = $(shell git describe --tags --exact-match 2>/dev/null || echo "")
+GIT_DESCRIBE = $(shell git describe --tags --always 2>/dev/null || echo "dev-$(GIT_COMMIT)")
+TIMESTAMP = $(shell date +%Y%m%d%H%M%S)
+BUILD_TIME = $(shell date +"%Y-%m-%d %H:%M:%S")
+BUILD_DATETIME = $(shell date +"%Y-%m-%dT%H:%M:%S%z")
+VERSION ?= $(if $(GIT_TAG),$(GIT_TAG),$(GIT_DESCRIBE))
+BUILD_METADATA = $(BUILD_TYPE).$(TIMESTAMP).$(GIT_COMMIT)
 
 # 颜色输出
 RED = \033[0;31m
@@ -54,23 +74,43 @@ PURPLE = \033[0;35m
 CYAN = \033[0;36m
 NC = \033[0m
 
+# 启用 Docker BuildKit
+export DOCKER_BUILDKIT=1
+export COMPOSE_DOCKER_CLI_BUILD=1
+
 # ==================== 构建参数 ====================
 BUILD_ARGS = \
 	--build-arg BUILD_TYPE=$(BUILD_TYPE) \
 	--build-arg PIP_INDEX_URL=$(PIP_INDEX_URL) \
 	--build-arg PIP_TRUSTED_HOST=$(PIP_TRUSTED_HOST) \
-	--build-arg PIP_EXTRA_INDEX_URL=$(PIP_EXTRA_INDEX_URL) \
+	--build-arg PIP_EXTRA_INDEX_URL="$(PIP_EXTRA_INDEX_URL)" \
 	--build-arg EXTRA_APT_PACKAGES="$(EXTRA_APT_PACKAGES)" \
 	--build-arg INSTALL_DEV_TOOLS=$(INSTALL_DEV_TOOLS) \
 	--build-arg CLEAN_BUILD_DEPS=$(CLEAN_BUILD_DEPS) \
 	--build-arg VERSION="$(VERSION)" \
 	--build-arg BUILD_TIME="$(BUILD_TIME)" \
+	--build-arg BUILD_DATETIME="$(BUILD_DATETIME)" \
 	--build-arg GIT_COMMIT=$(GIT_COMMIT)
 
 # 标签
-TAGS = -t $(IMAGE_NAME):$(BUILD_TYPE)-$(GIT_COMMIT) \
-       -t $(IMAGE_NAME):$(BUILD_TYPE)-latest \
-       -t $(IMAGE_NAME):latest
+TAGS = -t $(IMAGE_NAME):latest \
+       -t $(IMAGE_NAME):$(BUILD_TYPE) \
+       -t $(IMAGE_NAME):$(VERSION)
+
+# 当 VERSION 不包含 BUILD_TYPE 时，添加组合标签
+ifneq ($(findstring $(BUILD_TYPE),$(VERSION)),$(BUILD_TYPE))
+    TAGS += -t $(IMAGE_NAME):$(VERSION)-$(BUILD_TYPE)
+endif
+
+# 生产环境添加 stable 标签
+ifeq ($(BUILD_TYPE), production)
+    TAGS += -t $(IMAGE_NAME):stable
+endif
+
+# 只在需要追溯时保留元数据标签
+ifeq ($(NEED_METADATA), true)
+    TAGS += -t $(IMAGE_NAME):$(BUILD_METADATA)
+endif
 
 # 缓存控制
 ifeq ($(NO_CACHE), true)
@@ -127,11 +167,30 @@ help:
 	@echo "  make inspect                          - 查看镜像详细信息"
 	@echo "  make history                          - 查看镜像构建历史"
 	@echo ""
+	@echo "$(YELLOW)多架构构建:$(NC)"
+	@echo "  make builder-create                   - 创建多架构构建器"
+	@echo "  make builder-use                      - 使用多架构构建器"  
+	@echo "  make builder-stop                     - 停止构建器"
+	@echo "  make builder-rm                       - 删除构建器"
+	@echo "  make build-multi                      - 构建多架构镜像（本地加载）"
+	@echo "  make build-multi-push                 - 构建并推送多架构镜像"
+	@echo "  make build-multi-dev                  - 构建多架构开发镜像"
+	@echo "  make build-multi-prod                 - 构建多架构生产镜像"
+	@echo "  make build-multi-test                 - 构建多架构测试镜像"
+	@echo ""
 	@echo "$(YELLOW)其他:$(NC)"
 	@echo "  make clean                            - 清理镜像"
 	@echo "  make clean-all                        - 清理所有镜像和缓存"
 	@echo "  make test                             - 测试镜像"
 	@echo "  make show-info                        - 显示当前配置"
+	@echo ""
+	@echo "$(YELLOW)多架构查看:$(NC)"
+	@echo "  make inspect-multi                    - 查看当前版本多架构镜像信息"
+	@echo "  make inspect-multi-latest              - 查看最新多架构镜像信息"
+	@echo "  make inspect-multi-raw                 - 查看多架构镜像原始 Manifest"
+	@echo "  make list-builders                     - 查看所有构建器"
+	@echo "  make inspect-builder                    - 查看当前构建器详细信息"
+	@echo "  make inspect-builder-cache              - 查看构建器缓存使用情况"
 	@echo "$(CYAN)==========================================================$(NC)"
 
 # ==================== 基础构建 ====================
@@ -154,7 +213,16 @@ build:
 		$(TAGS) \
 		.
 	@echo "$(GREEN)✓ 构建完成！$(NC)"
-	@echo "  镜像标签: $(IMAGE_NAME):$(BUILD_TYPE)-$(GIT_COMMIT), $(IMAGE_NAME):latest"
+	@echo "  生成的标签:"
+	@echo "    - $(IMAGE_NAME):latest"
+	@echo "    - $(IMAGE_NAME):$(BUILD_TYPE)"
+	@echo "    - $(IMAGE_NAME):$(VERSION)"
+	@if [ "$(VERSION)" != "$(VERSION)-$(BUILD_TYPE)" ]; then \
+		echo "    - $(IMAGE_NAME):$(VERSION)-$(BUILD_TYPE)"; \
+	fi
+	@if [ "$(BUILD_TYPE)" = "production" ]; then \
+		echo "    - $(IMAGE_NAME):stable"; \
+	fi
 
 # ==================== 无缓存构建 ====================
 build-nocache:
@@ -332,10 +400,26 @@ load:
 
 push:
 	@echo "$(GREEN)推送镜像到仓库...$(NC)"
-	docker tag $(IMAGE_NAME):latest $(FULL_IMAGE_NAME):$(VERSION)
-	docker tag $(IMAGE_NAME):latest $(FULL_IMAGE_NAME):latest
-	docker push $(FULL_IMAGE_NAME):$(VERSION)
-	docker push $(FULL_IMAGE_NAME):latest
+	@echo "$(YELLOW)检测是否支持多架构...$(NC)"
+	@if docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "$(GREEN)使用多架构推送...$(NC)"; \
+		docker buildx use $(BUILDX_BUILDER); \
+		docker buildx build \
+			--platform $(PLATFORMS) \
+			--push \
+			$(CACHE_OPTION) \
+			$(BUILD_ARGS) \
+			-t $(FULL_IMAGE_NAME):$(VERSION) \
+			-t $(FULL_IMAGE_NAME):latest \
+			-t $(FULL_IMAGE_NAME):$(BUILD_TYPE) \
+			.; \
+	else \
+		echo "$(YELLOW)使用传统方式推送（仅 $(DEFAULT_PLATFORM)）...$(NC)"; \
+		docker tag $(IMAGE_NAME):latest $(FULL_IMAGE_NAME):$(VERSION); \
+		docker tag $(IMAGE_NAME):latest $(FULL_IMAGE_NAME):latest; \
+		docker push $(FULL_IMAGE_NAME):$(VERSION); \
+		docker push $(FULL_IMAGE_NAME):latest; \
+	fi
 	@echo "$(GREEN)✓ 已推送到 $(FULL_IMAGE_NAME)$(NC)"
 
 pull:
@@ -351,6 +435,219 @@ inspect:
 
 history:
 	docker history $(IMAGE_NAME):latest
+
+# ==================== 多架构镜像查看命令 ====================
+inspect-multi:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)查看多架构镜像信息$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "  $(YELLOW)镜像:$(NC) $(FULL_IMAGE_NAME):$(VERSION)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@if docker buildx imagetools inspect $(FULL_IMAGE_NAME):$(VERSION) >/dev/null 2>&1; then \
+		docker buildx imagetools inspect $(FULL_IMAGE_NAME):$(VERSION); \
+	elif docker buildx imagetools inspect $(IMAGE_NAME):$(VERSION) >/dev/null 2>&1; then \
+		docker buildx imagetools inspect $(IMAGE_NAME):$(VERSION); \
+	else \
+		echo "$(RED)错误: 未找到镜像 $(FULL_IMAGE_NAME):$(VERSION) 或 $(IMAGE_NAME):$(VERSION)$(NC)"; \
+		echo "请先运行 'make build-multi' 或 'make build-multi-push' 构建镜像"; \
+		exit 1; \
+	fi
+
+inspect-multi-latest:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)查看最新多架构镜像信息$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "  $(YELLOW)镜像:$(NC) $(FULL_IMAGE_NAME):latest"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@if docker buildx imagetools inspect $(FULL_IMAGE_NAME):latest >/dev/null 2>&1; then \
+		docker buildx imagetools inspect $(FULL_IMAGE_NAME):latest; \
+	elif docker buildx imagetools inspect $(IMAGE_NAME):latest >/dev/null 2>&1; then \
+		docker buildx imagetools inspect $(IMAGE_NAME):latest; \
+	else \
+		echo "$(RED)错误: 未找到镜像 $(FULL_IMAGE_NAME):latest 或 $(IMAGE_NAME):latest$(NC)"; \
+		echo "请先运行 'make build-multi' 或 'make build-multi-push' 构建镜像"; \
+		exit 1; \
+	fi
+
+inspect-multi-raw:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)查看多架构镜像原始 Manifest$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "  $(YELLOW)镜像:$(NC) $(FULL_IMAGE_NAME):$(VERSION)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@if docker buildx imagetools inspect $(FULL_IMAGE_NAME):$(VERSION) --raw >/dev/null 2>&1; then \
+		docker buildx imagetools inspect $(FULL_IMAGE_NAME):$(VERSION) --raw | jq '.' 2>/dev/null || cat; \
+	elif docker buildx imagetools inspect $(IMAGE_NAME):$(VERSION) --raw >/dev/null 2>&1; then \
+		docker buildx imagetools inspect $(IMAGE_NAME):$(VERSION) --raw | jq '.' 2>/dev/null || cat; \
+	else \
+		echo "$(RED)错误: 未找到镜像 $(FULL_IMAGE_NAME):$(VERSION) 或 $(IMAGE_NAME):$(VERSION)$(NC)"; \
+		echo "请先运行 'make build-multi' 或 'make build-multi-push' 构建镜像"; \
+		exit 1; \
+	fi
+
+list-builders:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)查看所有构建器$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	docker buildx ls
+
+inspect-builder-cache:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)查看构建器缓存使用情况$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	docker buildx du
+
+inspect-builder:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)查看构建器详细信息$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "  $(YELLOW)构建器:$(NC) $(BUILDX_BUILDER)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	docker buildx inspect $(BUILDX_BUILDER)
+
+# ==================== 多架构构建 ====================
+builder-create:
+	@echo "$(GREEN)创建多架构构建器 $(BUILDX_BUILDER)...$(NC)"
+	@if docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "$(YELLOW)构建器 $(BUILDX_BUILDER) 已存在，跳过创建$(NC)"; \
+	else \
+		docker buildx create --name $(BUILDX_BUILDER) --driver docker-container --bootstrap; \
+		echo "$(GREEN)✓ 构建器创建完成$(NC)"; \
+	fi
+	@echo "使用 'make builder-use' 切换到该构建器"
+
+builder-use:
+	@echo "$(GREEN)切换到构建器 $(BUILDX_BUILDER)...$(NC)"
+	docker buildx use $(BUILDX_BUILDER)
+	@echo "$(GREEN)✓ 已切换到构建器 $(BUILDX_BUILDER)$(NC)"
+
+builder-stop:
+	@echo "$(YELLOW)停止构建器 $(BUILDX_BUILDER)...$(NC)"
+	-docker buildx stop $(BUILDX_BUILDER)
+	@echo "$(GREEN)✓ 构建器已停止$(NC)"
+
+builder-rm:
+	@echo "$(YELLOW)删除构建器 $(BUILDX_BUILDER)...$(NC)"
+	-docker buildx rm $(BUILDX_BUILDER)
+	@echo "$(GREEN)✓ 构建器已删除$(NC)"
+
+build-multi:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)多架构镜像构建$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(YELLOW)构建配置:$(NC)"
+	@echo "  $(YELLOW)BUILD_TYPE:$(NC) $(BUILD_TYPE)"
+	@echo "  $(YELLOW)PLATFORMS:$(NC) $(PLATFORMS)"
+	@echo "  $(YELLOW)VERSION:$(NC) $(VERSION)"
+	@echo "  $(YELLOW)GIT_COMMIT:$(NC) $(GIT_COMMIT)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	
+	# 检查构建器是否存在
+	@if ! docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "$(YELLOW)构建器 $(BUILDX_BUILDER) 不存在，正在创建...$(NC)"; \
+		$(MAKE) builder-create; \
+	else \
+		echo "$(GREEN)使用现有构建器 $(BUILDX_BUILDER)$(NC)"; \
+	fi
+	
+	# 确保使用正确的构建器
+	docker buildx use $(BUILDX_BUILDER)
+	
+	# 构建多架构镜像（构建到构建器缓存，不加载到本地）
+	@echo "$(YELLOW)注意: 多架构镜像只构建到构建器缓存，不会加载到本地$(NC)"
+	@echo "$(YELLOW)如需加载到本地，请使用 'make build' 构建单架构镜像$(NC)"
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		$(CACHE_OPTION) \
+		$(BUILD_ARGS) \
+		$(TAGS) \
+		.
+	@echo "$(GREEN)✓ 多架构构建完成！$(NC)"
+	@echo "  支持的平台: $(PLATFORMS)"
+	@echo "  镜像已构建到构建器缓存中"
+	@echo "  使用 'make build-multi-push' 推送到仓库"
+
+build-multi-push:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)多架构镜像构建并推送$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(YELLOW)构建配置:$(NC)"
+	@echo "  $(YELLOW)BUILD_TYPE:$(NC) $(BUILD_TYPE)"
+	@echo "  $(YELLOW)PLATFORMS:$(NC) $(PLATFORMS)"
+	@echo "  $(YELLOW)VERSION:$(NC) $(VERSION)"
+	@echo "  $(YELLOW)FULL_IMAGE_NAME:$(NC) $(FULL_IMAGE_NAME)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	
+	# 检查构建器是否存在
+	@if ! docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "$(YELLOW)构建器 $(BUILDX_BUILDER) 不存在，正在创建...$(NC)"; \
+		$(MAKE) builder-create; \
+	else \
+		echo "$(GREEN)使用现有构建器 $(BUILDX_BUILDER)$(NC)"; \
+	fi
+	
+	# 确保使用正确的构建器
+	docker buildx use $(BUILDX_BUILDER)
+	
+	# 构建并推送多架构镜像
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--push \
+		$(CACHE_OPTION) \
+		$(BUILD_ARGS) \
+		-t $(FULL_IMAGE_NAME):$(VERSION) \
+		-t $(FULL_IMAGE_NAME):latest \
+		-t $(FULL_IMAGE_NAME):$(BUILD_TYPE) \
+		.
+	@echo "$(GREEN)✓ 多架构镜像已推送！$(NC)"
+	@echo "  镜像地址: $(FULL_IMAGE_NAME):$(VERSION)"
+	@echo "  支持的平台: $(PLATFORMS)"
+
+build-multi-local:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)多架构构建器 - 本地构建（当前平台）$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(YELLOW)构建配置:$(NC)"
+	@echo "  $(YELLOW)BUILD_TYPE:$(NC) $(BUILD_TYPE)"
+	@echo "  $(YELLOW)PLATFORM:$(NC) $(DEFAULT_PLATFORM)"
+	@echo "  $(YELLOW)VERSION:$(NC) $(VERSION)"
+	@echo "  $(YELLOW)GIT_COMMIT:$(NC) $(GIT_COMMIT)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	
+	# 检查构建器是否存在
+	@if ! docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1; then \
+		echo "$(YELLOW)构建器 $(BUILDX_BUILDER) 不存在，正在创建...$(NC)"; \
+		$(MAKE) builder-create; \
+	else \
+		echo "$(GREEN)使用现有构建器 $(BUILDX_BUILDER)$(NC)"; \
+	fi
+	
+	# 确保使用正确的构建器
+	docker buildx use $(BUILDX_BUILDER)
+	
+	# 构建单平台镜像并加载到本地
+	docker buildx build \
+		--platform $(DEFAULT_PLATFORM) \
+		--load \
+		$(CACHE_OPTION) \
+		$(BUILD_ARGS) \
+		$(TAGS) \
+		.
+	@echo "$(GREEN)✓ 本地构建完成！$(NC)"
+	@echo "  平台: $(DEFAULT_PLATFORM)"
+	@echo "  生成的标签:"
+	@echo "    - $(IMAGE_NAME):latest"
+	@echo "    - $(IMAGE_NAME):$(BUILD_TYPE)"
+	@echo "    - $(IMAGE_NAME):$(VERSION)"
+
+build-multi-dev:
+	$(MAKE) build-multi-push BUILD_TYPE=development INSTALL_DEV_TOOLS=true
+
+build-multi-prod:
+	$(MAKE) build-multi-push BUILD_TYPE=production INSTALL_DEV_TOOLS=false
+
+build-multi-test:
+	$(MAKE) build-multi-push BUILD_TYPE=testing INSTALL_DEV_TOOLS=false
 
 # ==================== 测试命令 ====================
 test:
@@ -396,6 +693,7 @@ show-info:
 	@echo "  $(YELLOW)EXTRA_APT_PACKAGES:$(NC) $(EXTRA_APT_PACKAGES)"
 	@echo "  $(YELLOW)VERSION:$(NC) $(VERSION)"
 	@echo "  $(YELLOW)GIT_COMMIT:$(NC) $(GIT_COMMIT)"
+	@echo "  $(YELLOW)PLATFORMS:$(NC) $(PLATFORMS)"
 	@echo "  $(YELLOW)PORT:$(NC) $(PORT)"
 	@echo "  $(YELLOW)HOST_PORT:$(NC) $(HOST_PORT)"
 	@echo "$(CYAN)==========================================================$(NC)"
