@@ -1,282 +1,133 @@
 #!/bin/bash
-# ==========================================
-# entrypoint.sh
-# ==========================================
+set -e
 
-set -euo pipefail
-IFS=$'\n\t'
+# 显示版本信息
+if [ -n "${VERSION}" ] || [ -n "${BUILD_TIME}" ] || [ -n "${GIT_COMMIT}" ]; then
+    echo "=========================================="
+    echo "Jupyter Docker Image"
+    [ -n "${VERSION}" ] && echo "Version: ${VERSION}"
+    [ -n "${BUILD_TIME}" ] && echo "Build Time: ${BUILD_TIME}"
+    [ -n "${GIT_COMMIT}" ] && echo "Git Commit: ${GIT_COMMIT}"
+    [ -n "${BUILD_TYPE}" ] && echo "Build Type: ${BUILD_TYPE}"
+    echo "=========================================="
+fi
 
-# ==================== 配置部分 ====================
-readonly SCRIPT_NAME="entrypoint.sh"
-readonly VERSION="1.0.0"
-readonly CONFIG_DIR="/root/.jupyter"
-readonly DEFAULT_PORT=8888
-readonly DEFAULT_IP="0.0.0.0"
-readonly DEFAULT_DIR="/workspace"
+# 设置用户相关的环境变量
+NB_USER="${NB_USER:-jovyan}"
+NB_UID="${NB_UID:-1000}"
+NB_GID="${NB_GID:-1000}"
+HOME="/home/${NB_USER}"
 
-# 取构建信息
-BUILD_TYPE="${BUILD_TYPE:-production}"
-PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
-PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}"
-PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL:-}"
-INSTALL_DEV_TOOLS="${INSTALL_DEV_TOOLS:-false}"
+# 确保 PATH 包含用户本地 bin 目录
+export PATH="${HOME}/.local/bin:${PATH}"
 
-# 版本信息
-readonly IMAGE_VERSION="${VERSION:-latest}"
-readonly IMAGE_BUILD_TIME="${BUILD_TIME:-unknown}"
-readonly IMAGE_GIT_COMMIT="${GIT_COMMIT:-unknown}"
-
-# ==================== 日志函数 ====================
-log_info() { echo "[INFO] $(date '+%Y-%m-%d %H:%M:%S') - $*"; }
-log_warn() { echo "[WARN] $(date '+%Y-%m-%d %H:%M:%S') - $*" >&2; }
-log_error() { echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S') - $*" >&2; }
-log_debug() { if [[ "${DEBUG:-false}" == "true" ]]; then echo "[DEBUG] $(date '+%Y-%m-%d %H:%M:%S') - $*"; fi; }
-
-# ==================== Banner 函数 ====================
-print_banner() {
-    echo ""
-    cat << "EOF"
-|  _ \  __ _| |_ __ _ _ __ ___ (_)_ __   __| |
-| | | |/ _` | __/ _` | '_ ` _ \| | '_ \ / _` |
-| |_| | (_| | || (_| | | | | | | | | | | (_| |
-|____/ \__,_|\__\__,_|_| |_| |_|_|_| |_|\__,_|
-EOF
-    echo ""
-    echo "版本: ${IMAGE_VERSION} | 构建类型: ${BUILD_TYPE} | Python: $(python --version 2>&1 | cut -d' ' -f2)"
-    echo "镜像源: ${PIP_INDEX_URL}"
-    echo "------------------------------------------------------------"
-    echo ""
-}
-
-# ==================== 初始化函数 ====================
-init_directories() {
-    log_debug "初始化目录结构"
+# 如果以 root 用户运行，则修复权限并切换到普通用户
+if [ "$(id -u)" = "0" ]; then
+    echo "Container started as root, setting up permissions..."
     
-    local workspace_dir="/workspace"
+    # 修复关键目录的权限
+    if [ -d "${HOME}" ]; then
+        echo "Fixing permissions on home directory..."
+        /usr/local/bin/fix-permissions "${HOME}"
+    fi
+    
+    # 修复工作目录
+    if [ -n "${JUPYTER_DIR}" ] && [ -d "${JUPYTER_DIR}" ]; then
+        echo "Fixing permissions on JUPYTER_DIR: ${JUPYTER_DIR}"
+        /usr/local/bin/fix-permissions "${JUPYTER_DIR}"
+    fi
     
     # 确保工作目录存在
-    if [[ ! -d "${workspace_dir}" ]]; then
-        mkdir -p "${workspace_dir}" || {
-            log_error "无法创建工作目录: ${workspace_dir}"
-            return 1
-        }
-        log_info "创建工作目录: ${workspace_dir}"
+    if [ -n "${JUPYTER_DIR}" ] && [ ! -d "${JUPYTER_DIR}" ]; then
+        echo "Creating JUPYTER_DIR: ${JUPYTER_DIR}"
+        mkdir -p "${JUPYTER_DIR}"
+        chown ${NB_USER}:${NB_GID} "${JUPYTER_DIR}"
     fi
     
-    # 检查工作目录权限
-    if [[ ! -w "${workspace_dir}" ]]; then
-        log_error "工作目录不可写: ${workspace_dir}"
-        log_error "提示: 如果使用 -v 挂载，请确保目录有写入权限"
-        return 1
-    fi
+    echo "Switching to user: ${NB_USER} (uid: ${NB_UID}, gid: ${NB_GID})"
     
-    # 创建 Jupyter 配置目录
-    if [[ ! -d "${CONFIG_DIR}" ]]; then
-        mkdir -p "${CONFIG_DIR}"
-        log_debug "创建配置目录: ${CONFIG_DIR}"
-    fi
-}
+    # 切换到普通用户执行，保留所有环境变量
+    exec su -l "${NB_USER}" -c "cd ${JUPYTER_DIR:-${HOME}/workspace} && exec $0 $@"
+fi
 
-# ==================== Token 管理 ====================
-generate_token() {
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 24
-    else
-        cat /dev/urandom | tr -dc 'a-f0-9' | fold -w 48 | head -n 1 2>/dev/null || echo "datamind-$(date +%s)"
-    fi
-}
+# 以下代码以普通用户身份运行
+echo "Running as user: $(whoami) (uid: $(id -u), gid: $(id -g))"
+echo "PATH: ${PATH}"
 
-get_or_create_token() {
-    local token_file="${CONFIG_DIR}/token.txt"
-    local token=""
+# 验证 jupyter 是否可用
+if ! command -v jupyter &> /dev/null; then
+    echo "⚠️  jupyter command not found in PATH"
+    echo "   Checking common locations..."
     
-    if [[ -n "${JUPYTER_TOKEN:-}" ]]; then
-        token="${JUPYTER_TOKEN}"
-        log_debug "使用环境变量中的 token"
-    elif [[ -f "${token_file}" ]]; then
-        token=$(cat "${token_file}")
-        log_debug "从文件读取 token"
-    else
-        token=$(generate_token)
-        echo "${token}" > "${token_file}"
-        chmod 600 "${token_file}"
-        # 不在这里输出日志，只返回 token
-    fi
-    
-    echo "${token}"
-}
-
-# ==================== 命令处理 ====================
-show_help() {
-    cat << EOF
-用法: docker run datamind-notebook [命令] [参数]
-
-命令:
-  (无)               启动 Jupyter Notebook
-  shell|bash|sh      启动 shell
-  python|py          启动 Python REPL
-  pip                执行 pip 命令
-  jupyter            执行 jupyter 命令
-  lab                启动 JupyterLab
-  info               显示镜像信息
-  version            显示版本信息
-  help               显示此帮助
-
-环境变量:
-  JUPYTER_PORT      Jupyter 端口 (默认: 8888)
-  JUPYTER_IP        监听 IP (默认: 0.0.0.0)
-  JUPYTER_DIR       工作目录 (默认: /workspace)
-  JUPYTER_TOKEN     访问令牌 (可选)
-  HOST_IP           主机 IP (用于远程访问提示)
-  DEBUG             调试模式
-
-示例:
-  docker run -p 8888:8888 -v \$(pwd):/workspace datamind-notebook
-  docker run datamind-notebook python --version
-  docker run -e JUPYTER_TOKEN=mysecret datamind-notebook
-EOF
-}
-
-handle_command() {
-    if [[ $# -eq 0 ]]; then
-        return 1
-    fi
-    
-    local cmd="$1"
-    shift
-    
-    case "${cmd}" in
-        shell|bash|sh)
-            exec /bin/bash "$@"
-            ;;
-        python|py)
-            exec python "$@"
-            ;;
-        pip)
-            exec pip "$@"
-            ;;
-        jupyter)
-            exec jupyter "$@"
-            ;;
-        lab)
-            exec jupyter lab \
-                --ip="${JUPYTER_IP:-${DEFAULT_IP}}" \
-                --port="${JUPYTER_PORT:-${DEFAULT_PORT}}" \
-                --notebook-dir="${JUPYTER_DIR:-${DEFAULT_DIR}}" \
-                --no-browser \
-                --allow-root
-            ;;
-        info)
-            echo "镜像版本: ${IMAGE_VERSION}"
-            echo "构建时间: ${IMAGE_BUILD_TIME}"
-            echo "Git提交: ${IMAGE_GIT_COMMIT}"
-            echo "构建类型: ${BUILD_TYPE}"
-            echo "Python: $(python --version 2>&1 | cut -d' ' -f2)"
-            echo "pip镜像源: ${PIP_INDEX_URL}"
-            exit 0
-            ;;
-        version|--version|-v)
-            echo "datamind-notebook ${IMAGE_VERSION}"
-            exit 0
-            ;;
-        help|--help|-h)
-            show_help
-            exit 0
-            ;;
-        *)
-            exec "${cmd}" "$@"
-            ;;
-    esac
-}
-
-# ==================== 启动函数 ====================
-start_jupyter() {
-    local token="$1"
-    local port="${JUPYTER_PORT:-${DEFAULT_PORT}}"
-    local ip="${JUPYTER_IP:-${DEFAULT_IP}}"
-    local dir="${JUPYTER_DIR:-${DEFAULT_DIR}}"
-    
-    # 先输出访问信息，再启动 Jupyter
-    echo ""
-    echo "========================================"
-    echo "Jupyter 访问信息"
-    echo "========================================"
-    echo "本地访问: http://localhost:${port}"
-    echo "访问令牌: ${token}"
-    echo "完整地址: http://localhost:${port}/?token=${token}"
-    echo ""
-    echo "工作目录: ${dir}"
-    if mount | grep -q "/workspace"; then
-        echo "挂载卷: $(mount | grep "/workspace" | head -1 | awk '{print $1}')"
-    fi
-    echo "========================================"
-    echo ""
-    
-    log_info "启动 Jupyter Notebook..."
-    
-    local cmd=(
-        "jupyter" "notebook"
-        "--ip=${ip}"
-        "--port=${port}"
-        "--notebook-dir=${dir}"
-        "--no-browser"
-        "--allow-root"
-        "--NotebookApp.token=${token}"
+    # 检查常见位置
+    JUPYTER_LOCATIONS=(
+        "${HOME}/.local/bin/jupyter"
+        "/usr/local/bin/jupyter"
+        "/usr/bin/jupyter"
     )
     
-    if [[ -f "${CONFIG_DIR}/jupyter_notebook_config.py" ]]; then
-        cmd+=("--config=${CONFIG_DIR}/jupyter_notebook_config.py")
-    fi
+    JUPYTER_FOUND=""
+    for loc in "${JUPYTER_LOCATIONS[@]}"; do
+        if [ -x "${loc}" ]; then
+            JUPYTER_FOUND="${loc}"
+            echo "   ✓ Found at: ${loc}"
+            break
+        fi
+    done
     
-    exec "${cmd[@]}"
-}
-
-# ==================== 主函数 ====================
-main() {
-    print_banner
-    
-    # 处理命令
-    if [[ $# -gt 0 ]]; then
-        case "$1" in
-            help|--help|-h)
-                show_help
-                exit 0
-                ;;
-            version|--version|-v)
-                echo "datamind-notebook ${IMAGE_VERSION}"
-                exit 0
-                ;;
-            info)
-                # info 命令已经在 handle_command 中处理
-                if handle_command "$@"; then
-                    exit $?
-                fi
-                ;;
-            *)
-                if handle_command "$@"; then
-                    exit $?
-                fi
-                ;;
-        esac
-    fi
-    
-    # 初始化环境（不输出日志，除非 DEBUG）
-    if [[ "${DEBUG:-false}" == "true" ]]; then
-        init_directories || exit 1
+    if [ -n "${JUPYTER_FOUND}" ]; then
+        # 将目录添加到 PATH
+        export PATH="$(dirname "${JUPYTER_FOUND}"):${PATH}"
+        echo "   ✓ Added to PATH: $(dirname "${JUPYTER_FOUND}")"
     else
-        init_directories > /dev/null 2>&1 || exit 1
+        echo "❌ Error: jupyter not found in any standard location"
+        echo "   Installed packages:"
+        pip list --format=freeze | grep -E "jupyter|notebook|ipython|ipykernel" || echo "   No jupyter-related packages found"
+        exit 1
     fi
-    
-    # 获取 token（不输出日志）
-    local token
-    token=$(get_or_create_token)
-    
-    # 启动 Jupyter（包含访问信息显示）
-    start_jupyter "${token}"
-}
+fi
 
-# ==================== 信号处理 ====================
-trap 'echo "[INFO] 收到终止信号，正在关闭..."; exit 0' SIGTERM SIGINT SIGQUIT
+# 显示 jupyter 版本信息
+echo "✓ Jupyter version: $(jupyter --version 2>/dev/null || echo 'unknown')"
 
-# ==================== 脚本入口 ====================
-main "$@"
+# 确保工作目录存在并可访问
+WORK_DIR="${JUPYTER_DIR:-${HOME}/workspace}"
+if [ ! -d "${WORK_DIR}" ]; then
+    echo "Creating working directory: ${WORK_DIR}"
+    mkdir -p "${WORK_DIR}"
+fi
+cd "${WORK_DIR}"
+echo "Working directory: $(pwd)"
+
+# 如果有自定义命令，执行它
+if [ $# -gt 0 ]; then
+    echo "Executing custom command: $@"
+    exec "$@"
+fi
+
+# 默认启动 Jupyter Notebook
+echo "=========================================="
+echo "Starting Jupyter Notebook with:"
+echo "  IP: ${JUPYTER_IP:-0.0.0.0}"
+echo "  Port: ${JUPYTER_PORT:-8888}"
+echo "  Directory: ${WORK_DIR}"
+echo "  User: $(whoami)"
+echo "=========================================="
+
+# 构建 Jupyter 启动命令
+JUPYTER_CMD="jupyter notebook"
+JUPYTER_CMD="${JUPYTER_CMD} --ip=${JUPYTER_IP:-0.0.0.0}"
+JUPYTER_CMD="${JUPYTER_CMD} --port=${JUPYTER_PORT:-8888}"
+JUPYTER_CMD="${JUPYTER_CMD} --no-browser"
+JUPYTER_CMD="${JUPYTER_CMD} --notebook-dir=${WORK_DIR}"
+
+# 如果是 development 模式，添加 debug
+if [ "${BUILD_TYPE}" = "development" ]; then
+    JUPYTER_CMD="${JUPYTER_CMD} --debug"
+    echo "Running in development mode with debug output"
+fi
+
+# 执行 Jupyter
+echo "Executing: ${JUPYTER_CMD}"
+echo "=========================================="
+exec ${JUPYTER_CMD}
