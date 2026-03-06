@@ -29,7 +29,7 @@ CHILD_PID=""              # 子进程 PID
 
 # 获取当前时间戳（格式：YYYY-MM-DD HH:MM:SS.sss）
 get_timestamp() {
-    date '+%Y-%m-%d %H:%M:%S.%3N'
+    date '+%Y-%m-%d %H:%M:%S.%3N' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S'
 }
 
 log_info() {
@@ -127,9 +127,9 @@ print_banner() {
 }
 
 # ==========================================
-# 设置环境变量
+# 设置环境变量（静默模式）
 # ==========================================
-setup_environment() {
+setup_environment_silent() {
     export NB_USER="${NB_USER:-jovyan}"
     export NB_UID="${NB_UID:-1000}"
     export NB_GID="${NB_GID:-1000}"
@@ -142,7 +142,13 @@ setup_environment() {
     
     # 确保 PATH 包含用户本地 bin 目录
     export PATH="${HOME}/.local/bin:${PATH}:/usr/local/bin"
-    
+}
+
+# ==========================================
+# 设置环境变量（详细模式）
+# ==========================================
+setup_environment() {
+    setup_environment_silent
     log_debug "Environment: NB_USER=${NB_USER}, NB_UID=${NB_UID}, NB_GID=${NB_GID}"
     log_debug "PATH: ${PATH}"
 }
@@ -152,11 +158,17 @@ setup_environment() {
 # ==========================================
 fix_permissions() {
     local target_dir="$1"
+    local silent="${2:-false}"
+    
     if [ -d "${target_dir}" ]; then
-        log_debug "Fixing permissions for: ${target_dir}"
-        /usr/local/bin/fix-permissions "${target_dir}"
+        if [ "${silent}" != "true" ]; then
+            log_debug "Fixing permissions for: ${target_dir}"
+        fi
+        /usr/local/bin/fix-permissions "${target_dir}" 2>/dev/null || true
     else
-        log_warn "Directory does not exist, skipping: ${target_dir}"
+        if [ "${silent}" != "true" ]; then
+            log_warn "Directory does not exist, skipping: ${target_dir}"
+        fi
     fi
 }
 
@@ -167,15 +179,47 @@ ensure_directory() {
     local dir="$1"
     local owner="${2:-${NB_USER}}"
     local group="${3:-${NB_GID}}"
+    local silent="${4:-false}"
     
     if [ ! -d "${dir}" ]; then
-        log_debug "Creating directory: ${dir}"
+        if [ "${silent}" != "true" ]; then
+            log_debug "Creating directory: ${dir}"
+        fi
         mkdir -p "${dir}"
     fi
     
     if [ "$(id -u)" = "0" ]; then
-        chown -R ${owner}:${group} "${dir}"
+        chown -R ${owner}:${group} "${dir}" 2>/dev/null || true
     fi
+}
+
+# ==========================================
+# 检查 jupyter 是否可用（静默模式）
+# ==========================================
+check_jupyter_silent() {
+    if ! command -v jupyter &> /dev/null; then
+        # 检查常见位置
+        local jupyter_locations=(
+            "${HOME}/.local/bin/jupyter"
+            "/usr/local/bin/jupyter"
+            "/usr/bin/jupyter"
+        )
+        
+        local jupyter_found=""
+        for pattern in "${jupyter_locations[@]}"; do
+            if [ -x "${pattern}" ]; then
+                jupyter_found="${pattern}"
+                break
+            fi
+        done
+        
+        if [ -n "${jupyter_found}" ]; then
+            export PATH="$(dirname "${jupyter_found}"):${PATH}"
+        else
+            return 1
+        fi
+    fi
+    return 0
 }
 
 # ==========================================
@@ -230,15 +274,18 @@ check_jupyter() {
 # 设置 Jupyter 配置
 # ==========================================
 setup_jupyter_config() {
+    local silent="${1:-false}"
     local config_dir="${HOME}/.jupyter"
     local runtime_dir="${HOME}/.local/share/jupyter/runtime"
     
-    ensure_directory "${config_dir}"
-    ensure_directory "${runtime_dir}"
+    ensure_directory "${config_dir}" "${NB_USER}" "${NB_GID}" "${silent}"
+    ensure_directory "${runtime_dir}" "${NB_USER}" "${NB_GID}" "${silent}"
     
     # 如果没有配置文件，创建一个基本的
     if [ ! -f "${config_dir}/jupyter_notebook_config.py" ]; then
-        log_info "Creating default jupyter config..."
+        if [ "${silent}" != "true" ]; then
+            log_info "Creating default jupyter config..."
+        fi
         cat > "${config_dir}/jupyter_notebook_config.py" << EOF
 # Jupyter configuration file
 c.ServerApp.ip = '${JUPYTER_IP}'
@@ -437,12 +484,40 @@ watch_child() {
 }
 
 # ==========================================
+# 快速执行模式 - 直接执行命令，没有任何输出
+# ==========================================
+quick_exec() {
+    # 只设置必要的环境变量，不输出任何日志
+    setup_environment_silent
+    
+    # 如果需要以 root 运行，切换到普通用户
+    if [ "$(id -u)" = "0" ]; then
+        # 确保基本目录存在（静默模式）
+        ensure_directory "${HOME}" "${NB_USER}" "${NB_GID}" "true" 2>/dev/null || true
+        ensure_directory "${JUPYTER_DIR}" "${NB_USER}" "${NB_GID}" "true" 2>/dev/null || true
+        
+        # 切换到普通用户执行命令
+        exec su -l "${NB_USER}" -c "cd '${JUPYTER_DIR}' && exec $@"
+    else
+        # 直接执行命令
+        cd "${JUPYTER_DIR}" 2>/dev/null || true
+        exec "$@"
+    fi
+}
+
+# ==========================================
 # 主函数
 # ==========================================
 main() {
     # 检查是否需要显示帮助
     if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "help" ]; then
         show_help
+    fi
+    
+    # 如果有参数（用户指定了要执行的命令），直接执行，不显示任何 banner 和日志；
+    # 没有参数时，正常启动 Jupyter 服务
+    if [ $# -gt 0 ]; then
+        quick_exec "$@"
     fi
     
     # 设置信号处理
@@ -496,12 +571,6 @@ main() {
     if ! check_jupyter; then
         log_error "Jupyter check failed, exiting..."
         exit 1
-    fi
-    
-    # 如果有自定义命令
-    if [ $# -gt 0 ]; then
-        log_info "Executing custom command: $@"
-        exec "$@"
     fi
     
     # 构建 Jupyter 启动命令
