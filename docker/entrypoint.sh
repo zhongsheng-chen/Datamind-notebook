@@ -27,9 +27,9 @@ CHILD_PID=""              # 子进程 PID
 # 日志函数
 # ==========================================
 
-# 获取当前时间戳（格式：YYYY-MM-DD HH:MM:SS）
+# 获取当前时间戳（格式：YYYY-MM-DD HH:MM:SS.sss）
 get_timestamp() {
-    date '+%Y-%m-%d %H:%M:%S'
+    date '+%Y-%m-%d %H:%M:%S.%3N'
 }
 
 log_info() {
@@ -219,8 +219,9 @@ check_jupyter() {
     fi
     
     # 显示版本信息
-    log_info "Jupyter version information:"
-    jupyter --version 2>&1 | sed 's/^/  /'
+    log_debug "Jupyter version information:"
+    local version_output=$(jupyter --version 2>&1 | sed 's/^/  /')
+    log_debug "${version_output}"
     
     return 0
 }
