@@ -23,6 +23,7 @@ __pycache__/
 # 数据
 data/
 temp/
+workspace/
 *.db
 *.sqlite
 

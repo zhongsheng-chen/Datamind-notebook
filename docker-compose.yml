@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 构建参数配置
+        - BUILD_TYPE=${BUILD_TYPE:-production}
+        - PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        - PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}
+        - PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+        - EXTRA_APT_PACKAGES=${EXTRA_APT_PACKAGES:-}
+        - CLEAN_BUILD_DEPS=${CLEAN_BUILD_DEPS:-true}
+        - INSTALL_DEV_TOOLS=${INSTALL_DEV_TOOLS:-false}
+        - NB_USER=${NB_USER:-jovyan}
+        - NB_UID=${NB_UID:-1000}
+        - NB_GID=${NB_GID:-1000}
+        - VERSION=${VERSION:-latest}
+        - BUILD_DATE=${BUILD_DATE:-$(date -u +'%Y-%m-%d')}
+        - GIT_COMMIT=${GIT_COMMIT:-}
+        - GRANT_SUDO=${GRANT_SUDO:-no}
+    
+    image: ${IMAGE_NAME:-datamind-notebook}:${IMAGE_TAG:-latest}
+    container_name: ${CONTAINER_NAME:-datamind-notebook}
+
+    env_file:
+      # 环境变量文件
+      - .env
+
+    environment:
+      # 运行时环境变量
+      - TZ=Asia/Shanghai
+      - BUILD_TYPE=${BUILD_TYPE:-production}
+      - NB_USER=${NB_USER:-jovyan}
+      - NB_UID=${NB_UID:-1000}
+      - NB_GID=${NB_GID:-1000}
+      - GRANT_SUDO=${GRANT_SUDO:-no}
+      - JUPYTER_IP=${IP:-0.0.0.0}
+      - JUPYTER_PORT=${PORT:-8888}
+      - JUPYTER_NOTEBOOK_DIR=${JUPYTER_NOTEBOOK_DIR:-/home/${NB_USER:-jovyan}/workspace}
+      - JUPYTER_LOG_LEVEL={LOG_LEVEL:-INFO}
+      - JUPYTER_LOG_DIR={LOG_DIR:-/var/log/jupyter}
+      - JUPYTER_PASSWORD=${JUPYTER_PASSWORD:-}  # 可选：设置Jupyter密码
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-}        # 可选：设置Jupyter令牌
+    
+    ports:
+      - "${PORT:-8888}:8888"
+    
+    volumes:
+      # 挂载工作目录，实现代码持久化和实时编辑
+      - workspace:/home/${NB_USER:-jovyan}/workspace
+
+      # 可选：挂载数据目录
+      - data:/home/${NB_USER:-jovyan}/.local/share/jupyter
+
+      # 可选：挂载日志目录
+      - logs:/var/log/jupyter
+
+      # 可选：挂载配置文件
+      - config:/home/${NB_USER:-jovyan}/.jupyter:ro
+
+      # 可选：挂载pip缓存
+      - pip-cache:/home/${NB_USER:-jovyan}/.cache/pip
+    
+    # 用户和权限设置
+    user: ${NB_UID:-1000}:${NB_GID:-1000}
+    
+    # 资源限制（deploy配置仅在swarm模式下有效，保留但添加本地兼容选项）
+    deploy:
+      resources:
+        limits:
+          cpus: '${CPU_LIMIT:-2}'
+          memory: ${MEMORY_LIMIT:-4G}
+        reservations:
+          cpus: '${CPU_RESERVATION:-0.5}'
+          memory: ${MEMORY_RESERVATION:-1G}
+    
+    # 本地模式资源限制（兼容docker-compose up）
+    mem_limit: ${MEMORY_LIMIT:-4G}
+    mem_reservation: ${MEMORY_RESERVATION:-1G}
+    cpus: ${CPU_LIMIT:-2}
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    
+    # 重启策略
+    restart: ${RESTART_POLICY:-unless-stopped}
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "${LOG_MAX_SIZE:-10m}"
+        max-file: "${LOG_MAX_FILES:-3}"
+    
+    networks:
+      datamind-net:
+        ipv4_address: ${IPV4_ADDRESS:-172.21.0.2}
+    
+    # 添加标签
+    labels:
+      - "maintainer=Zhongsheng Chen"
+      - "version=${VERSION:-latest}"
+      - "build.type=${BUILD_TYPE:-production}"
+      - "description=Jupyter Notebook for Datamind"
+      - "network.name=${NETWORK_NAME:-datamind-notebook-network}"
+
+# 网络配置
+networks:
+  datamind-net:
+    name: ${NETWORK_NAME:-datamind-notebook-network}
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET:-172.21.0.0/16}
+          gateway: ${NETWORK_GATEWAY:-172.21.0.1}
+
+# 数据卷配置
+volumes:
+  workspace:
+    name: ${VOLUME_PREFIX:-datamind-notebook}-workspace
+    driver: local
+  data:
+    name: ${VOLUME_PREFIX:-datamind-notebook}-data
+    driver: local
+  logs:
+    name: ${VOLUME_PREFIX:-datamind-notebook}-logs
+    driver: local
+  config:
+    name: ${VOLUME_PREFIX:-datamind-notebook}-config
+    driver: local
+  pip-cache:
+    name: ${VOLUME_PREFIX:-datamind-notebook}-pip-cache
+    driver: local

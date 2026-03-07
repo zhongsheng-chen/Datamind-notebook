@@ -2,7 +2,13 @@ FROM python:3.10-slim
 
 LABEL maintainer="Zhongsheng Chen <zhongsheng.chen@outlook.com>"
 
-# ==================== 构建参数 ====================
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+USER root
+
+###################################
+#             构建参数 
+###################################
 # 镜像源配置
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
@@ -27,15 +33,19 @@ ARG GIT_COMMIT
 # 权限控制配置
 ARG GRANT_SUDO=no
 
-# ==================== 环境变量 ====================
+###################################
+#            环境变量 
+###################################
 ENV TZ=Asia/Shanghai \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    JUPYTER_PORT=8888 \
     JUPYTER_IP=0.0.0.0 \
-    JUPYTER_DIR=/home/${NB_USER}/workspace \
+    JUPYTER_PORT=8888 \
+    JUPYTER_NOTEBOOK_DIR=/home/${NB_USER}/workspace \
+    JUPYTER_LOG_LEVEL=INFO \
+    JUPYTER_LOG_DIR=/var/log/jupyter \
     NB_USER=${NB_USER} \
     NB_UID=${NB_UID} \
     NB_GID=${NB_GID} \
@@ -46,10 +56,13 @@ ENV TZ=Asia/Shanghai \
     PIP_INDEX_URL=${PIP_INDEX_URL} \
     PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
     PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
+    PIP_CACHE_DIR=/home/${NB_USER}/.cache/pip \
     HOME=/home/${NB_USER} \
     GRANT_SUDO=${GRANT_SUDO}
 
-# ==================== 创建用户和必要的目录 ====================
+###################################
+#        创建用户和必要的目录
+###################################
 RUN groupadd -g ${NB_GID} ${NB_USER} && \
     useradd -m -s /bin/bash -u ${NB_UID} -g ${NB_GID} ${NB_USER} && \
     # 创建必要的目录结构
@@ -57,22 +70,27 @@ RUN groupadd -g ${NB_GID} ${NB_USER} && \
     mkdir -p /home/${NB_USER}/.jupyter && \
     mkdir -p /home/${NB_USER}/.local && \
     mkdir -p /home/${NB_USER}/.cache && \
+    mkdir -p /var/log/jupyter && \
     # 设置初始权限
     chown -R ${NB_USER}:${NB_USER} /home/${NB_USER}
 
-# ==================== 复制 fix-permissions 脚本 ====================
+# 复制 fix-permissions 脚本
 COPY scripts/fix-permissions.sh /usr/local/bin/fix-permissions
 RUN chmod +x /usr/local/bin/fix-permissions
 
-# ==================== 设置工作目录 ====================
-WORKDIR /home/${NB_USER}/workspace
-
-# ==================== 安装系统依赖 ====================
+###################################
+#           安装系统依赖 
+###################################
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     git \
     gosu \
+    sudo \
+    bash \
+    bash-completion \
+    expect-dev \
+    bsdmainutils \
     ca-certificates \
     ${EXTRA_APT_PACKAGES} \
     && if [ "${INSTALL_DEV_TOOLS}" = "true" ]; then \
@@ -83,9 +101,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         procps \
         tree; \
     fi \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# ==================== 配置 pip 镜像源（针对所有用户） ====================
+###################################
+#    配置 pip 镜像源（针对所有用户）
+###################################
 RUN echo "[global]" > /etc/pip.conf && \
     echo "index-url = ${PIP_INDEX_URL}" >> /etc/pip.conf && \
     echo "trusted-host = ${PIP_TRUSTED_HOST}" >> /etc/pip.conf && \
@@ -93,21 +114,25 @@ RUN echo "[global]" > /etc/pip.conf && \
         echo "extra-index-url = ${PIP_EXTRA_INDEX_URL}" >> /etc/pip.conf; \
     fi
 
-# ==================== 配置 sudo 权限 ====================
+###################################
+#          配置 sudo 权限
+###################################
 RUN mkdir -p /etc/sudoers.d && \
     echo "# Sudo rules for Jupyter user - controlled by GRANT_SUDO" > /etc/sudoers.d/jupyter && \
     echo "# This file will be dynamically configured by entrypoint script" >> /etc/sudoers.d/jupyter && \
     echo "Defaults env_keep += \"PYTHONPATH PYTHONUSERBASE\"" >> /etc/sudoers.d/jupyter && \
     chmod 0440 /etc/sudoers.d/jupyter
 
-# ==================== 复制依赖文件 ====================
-COPY requirements.txt /tmp/requirements.txt
-
-# ==================== 安装 Python 依赖（使用非root用户执行安装） ====================
+###################################
+#       安装 Python 依赖
+#    （使用非root用户执行安装） 
+###################################
 USER ${NB_USER}
 
-# 升级 pip 并安装基础包
-RUN --mount=type=cache,target=/home/${NB_USER}/.cache/pip,uid=${NB_UID},gid=${NB_GID} \
+COPY requirements.txt /tmp/requirements.txt
+
+# 升级 pip 并安装基础包（使用非root用户执行安装）
+RUN --mount=type=cache,target=${PIP_CACHE_DIR},uid=${NB_UID},gid=${NB_GID} \
     pip install --upgrade pip setuptools wheel && \
     pip install jupyterlab notebook && \
     pip install -r /tmp/requirements.txt && \
@@ -119,7 +144,9 @@ RUN --mount=type=cache,target=/home/${NB_USER}/.cache/pip,uid=${NB_UID},gid=${NB
         pytest pytest-cov pytest-xdist; \
     fi
 
-# ==================== 清理构建依赖（需要root权限） ====================
+###################################
+#   清理构建依赖（需要root权限）
+###################################
 USER root
 RUN if [ "${CLEAN_BUILD_DEPS}" = "true" ] && [ "${BUILD_TYPE}" = "production" ]; then \
         apt-get purge -y build-essential && \
@@ -128,23 +155,31 @@ RUN if [ "${CLEAN_BUILD_DEPS}" = "true" ] && [ "${BUILD_TYPE}" = "production" ];
     # 清理临时文件
     rm -f /tmp/requirements.txt
 
-# ==================== 复制配置文件并修复权限 ====================
-# 复制 Jupyter 配置文件
+###################################
+#        复制文件并修复权限 
+###################################
+# 复制文件
 COPY config/jupyter_notebook_config.py /home/${NB_USER}/.jupyter/
-
-# 复制入口脚本
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# 复制健康检查脚本
 COPY scripts/healthcheck.py /usr/local/bin/healthcheck.py
-RUN chmod +x /usr/local/bin/healthcheck.py
 
-# 修复所有用户目录的权限
-RUN fix-permissions /home/${NB_USER} \
- && fix-permissions /usr/local/bin/healthcheck.py
+# 使用 fix-permissions 设置目录权限
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/healthcheck.py && \
+    # 修复日志目录权限
+    fix-permissions /var/log/jupyter && \
+    # 修复用户主目录权限
+    fix-permissions /home/${NB_USER} && \
+    # 修复脚本权限
+    fix-permissions /usr/local/bin/healthcheck.py
 
-# ==================== 添加标签 ====================
+# 验证日志目录权限（可选，用于调试）
+# RUN ls -la /var/log/ | grep jupyter && \
+#     echo "Jupyter log directory permissions:" && \
+#     ls -la /var/log/jupyter
+
+###################################
+#            添加标签 
+###################################
 LABEL build.type=${BUILD_TYPE} \
       build.git_commit=${GIT_COMMIT} \
       build.version=${VERSION} \
@@ -154,11 +189,15 @@ LABEL build.type=${BUILD_TYPE} \
       user.name=${NB_USER} \
       user.uid=${NB_UID}
 
-# ==================== 健康检查 ====================
+###################################
+#            健康检查 
+###################################
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD /usr/local/bin/healthcheck.py
 
-# ==================== 切换回普通用户 ====================
+###################################
+#         切换回普通用户
+###################################
 USER ${NB_USER}
 WORKDIR "${HOME}"
 

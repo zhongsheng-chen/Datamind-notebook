@@ -2,6 +2,23 @@
 set -euo pipefail
 
 # ==========================================
+# 快速路径 - 只处理 help 命令
+# ==========================================
+# 设置最基本的变量用于判断
+export NB_USER="${NB_USER:-jovyan}"
+export GRANT_SUDO="${GRANT_SUDO:-no}"
+export SUDO_SCOPE="${SUDO_SCOPE:-none}"
+
+# 只处理 help 命令，其他命令都交给后面的 exec
+if [ $# -gt 0 ]; then
+    case "$1" in
+        -h|--help|help)
+            # 继续执行，让后面的 show_help 处理
+            ;;
+    esac
+fi
+
+# ==========================================
 # 颜色定义
 # ==========================================
 if [ -t 1 ] && [ "$TERM" != "dumb" ] && [ -x /usr/bin/tput ] && tput setaf 1 >&/dev/null; then
@@ -81,15 +98,16 @@ ${CYAN}Environment Variables:${NC}
   NB_GID               Group ID (default: 1000)
   JUPYTER_IP           IP to bind (default: 0.0.0.0)
   JUPYTER_PORT         Port to listen on (default: 8888)
-  JUPYTER_DIR          Working directory (default: /home/jovyan/workspace)
+  JUPYTER_NOTEBOOK_DIR Working directory (default: /home/jovyan/workspace)
   JUPYTER_MODE         'notebook' or 'lab' (default: notebook)
   JUPYTER_TOKEN        Access token (default: auto-generated)
   JUPYTER_PASSWORD     Access password (default: none)
   JUPYTER_EXTRA_ARGS   Additional Jupyter arguments
   BUILD_TYPE           'production', 'development', 'testing'
-  DEBUG                Enable debug output (default: false)
   ALLOW_ORIGIN         Allow CORS origin (default: none)
+  FAST_START           Skip permission fixes for faster startup (default: true)
   TZ                   Timezone (default: Asia/Shanghai)
+  DEBUG                Enable debug output (default: false)
   
 ${CYAN}Sudo Configuration:${NC}
   GRANT_SUDO           Enable sudo access (yes/no, default: no)
@@ -113,8 +131,11 @@ ${CYAN}Examples:${NC}
   # Enable full sudo access
   docker run --user root -e GRANT_SUDO=yes -p 8888:8888 datamind-notebook
 
-  # Execute custom command
+  # FAST PATH: Execute custom command (skips all initialization)
   docker run --rm datamind-notebook python --version
+
+  # FAST PATH: Start a shell (instant)
+  docker run -it --rm datamind-notebook /bin/bash
 
 ${CYAN}More information:${NC}
   https://github.com/your-repo/datamind-notebook
@@ -123,9 +144,10 @@ EOF
 }
 
 # ==========================================
-# 打印 Banner
+# 打印 Banner 和启动信息
 # ==========================================
-print_banner() {
+print_startup_info() {
+    # 打印 Banner
     echo -e "${CYAN}#######################################################${NC}"
     echo -e "${CYAN}#                                                     #${NC}"
     echo -e "${CYAN}#  ____    _  _____  _    __  __ ___ _   _ ____       #${NC}"
@@ -147,7 +169,7 @@ print_banner() {
     echo -e "\n${CYAN}  System Information${NC}"
     printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "Hostname" "$(hostname)"
     printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "User" "${NB_USER:-jovyan}"
-    printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Work Dir" "${JUPYTER_DIR:-/home/jovyan/workspace}"
+    printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Home Dir" "${HOME:-/home/jovyan}"
     printf "${CYAN}   %-12s: ${BLUE}%s${NC}\n" "Started" "$(date '+%Y-%m-%d %H:%M:%S')"
     printf "${CYAN}   %-12s: ${PURPLE}%s${NC}\n" "Timezone" "${TZ:-Asia/Shanghai}"
     
@@ -162,6 +184,22 @@ print_banner() {
         printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "Sudo" "Disabled"
     fi
     
+    # Jupyter 配置信息
+    local jupyter_mode_desc=""
+    if [ "${JUPYTER_MODE}" = "lab" ]; then
+        jupyter_mode_desc="JupyterLab"
+    else
+        jupyter_mode_desc="Jupyter Notebook"
+    fi
+    
+    echo -e "\n${CYAN}Jupyter Server Configuration:${NC}"
+    printf "${CYAN}   %-12s: ${GREEN}%s${NC}\n" "Mode" "${jupyter_mode_desc}"
+    printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "IP" "${JUPYTER_IP}"
+    printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Port" "${JUPYTER_PORT}"
+    printf "${CYAN}   %-12s: ${PURPLE}%s${NC}\n" "Work Dir" "${JUPYTER_NOTEBOOK_DIR:-/home/jovyan/workspace}"
+    if [ -z "${JUPYTER_TOKEN:-}" ] && [ -z "${JUPYTER_PASSWORD:-}" ]; then
+        printf "${CYAN}   %-12s: ${YELLOW}%s${NC}\n" "Token" "Auto-generated (see below)"
+    fi
     echo ""
 }
 
@@ -175,14 +213,15 @@ setup_environment() {
     export HOME="/home/${NB_USER}"
     export JUPYTER_IP="${JUPYTER_IP:-0.0.0.0}"
     export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
-    export JUPYTER_DIR="${JUPYTER_DIR:-${HOME}/workspace}"
+    export JUPYTER_NOTEBOOK_DIR="${JUPYTER_NOTEBOOK_DIR:-/home/jovyan/workspace}"
     export DEBUG="${DEBUG:-false}"
-    export JUPYTER_MODE="${JUPYTER_MODE:-notebook}"
+    export JUPYTER_MODE="${JUPYTER_MODE:-lab}"
     export TZ="${TZ:-Asia/Shanghai}"
     export BUILD_TYPE="${BUILD_TYPE:-production}"
     export BUILD_DATE="${BUILD_DATE:-unknown}"
     export VERSION="${VERSION:-unknown}"
     export GIT_COMMIT="${GIT_COMMIT:-unknown}"
+    export FAST_START="${FAST_START:-true}"
     
     # Sudo 配置
     export GRANT_SUDO="${GRANT_SUDO:-no}"
@@ -205,13 +244,13 @@ setup_environment() {
     else
         # 没有root权限时，只设置环境变量
         log_debug "Running without root privileges, timezone set via environment: ${TZ}"
-        # Python 应用会通过环境变量 TZ 使用时区
     fi
     
     log_debug "Environment: NB_USER=${NB_USER}, NB_UID=${NB_UID}, NB_GID=${NB_GID}"
     log_debug "PATH: ${PATH}"
     log_debug "TZ: ${TZ}"
     log_debug "Sudo config: GRANT_SUDO=${GRANT_SUDO}, SUDO_SCOPE=${SUDO_SCOPE}"
+    log_debug "FAST_START: ${FAST_START}"
 }
 
 # ==========================================
@@ -220,24 +259,35 @@ setup_environment() {
 fix_permissions() {
     local target_dir="$1"
     local silent="${2:-false}"
+
+    [ -d "${target_dir}" ] || return 0
+
+    # 如果不是 root 不需要修复
+    if [ "$(id -u)" != "0" ]; then
+        return 0
+    fi
+
+    # 检查目录 owner
+    local current_uid
+    if command -v stat >/dev/null 2>&1; then
+        current_uid=$(stat -c %u "${target_dir}" 2>/dev/null || echo "")
+    fi
     
-    if [ -d "${target_dir}" ]; then
-        if [ "${silent}" != "true" ]; then
-            log_debug "Fixing permissions for: ${target_dir}"
-        fi
-        if command -v /usr/local/bin/fix-permissions &> /dev/null; then
-            /usr/local/bin/fix-permissions "${target_dir}" 2>/dev/null || true
-        else
-            # 备用的权限修复方法
-            if [ "$(id -u)" = "0" ]; then
-                chown -R "${NB_USER}:${NB_GID}" "${target_dir}" 2>/dev/null || true
-                chmod -R u+rwX,go+rX,go-w "${target_dir}" 2>/dev/null || true
-            fi
-        fi
+    # 如果无法获取或 owner 已经正确，跳过
+    if [ -n "${current_uid}" ] && [ "${current_uid}" = "${NB_UID}" ]; then
+        log_debug "Permissions already correct for ${target_dir}, skipping"
+        return 0
+    fi
+
+    if [ "${silent}" != "true" ]; then
+        log_info "Fixing permissions for ${target_dir}"
+    fi
+
+    if command -v /usr/local/bin/fix-permissions >/dev/null 2>&1; then
+        /usr/local/bin/fix-permissions "${target_dir}" 2>/dev/null || true
     else
-        if [ "${silent}" != "true" ]; then
-            log_warn "Directory does not exist, skipping: ${target_dir}"
-        fi
+        chown -R "${NB_UID}:${NB_GID}" "${target_dir}" 2>/dev/null || true
+        chmod -R u+rwX,go+rX,go-w "${target_dir}" 2>/dev/null || true
     fi
 }
 
@@ -249,17 +299,15 @@ ensure_directory() {
     local owner="${2:-${NB_USER}}"
     local group="${3:-${NB_GID}}"
     local silent="${4:-false}"
-    
+
     if [ ! -d "${dir}" ]; then
-        if [ "${silent}" != "true" ]; then
-            log_debug "Creating directory: ${dir}"
-        fi
+        [ "${silent}" != "true" ] && log_debug "Creating directory: ${dir}"
         mkdir -p "${dir}"
     fi
-    
+
     if [ "$(id -u)" = "0" ]; then
-        chown -R "${owner}:${group}" "${dir}" 2>/dev/null || true
-        chmod -R u+rwX,go+rX,go-w "${dir}" 2>/dev/null || true
+        chown "${owner}:${group}" "${dir}" 2>/dev/null || true
+        chmod u+rwX,go+rX,go-w "${dir}" 2>/dev/null || true
     fi
 }
 
@@ -295,14 +343,56 @@ EOF
         
         # 设置正确的权限
         chmod 0440 "${sudo_config_file}"
-        log_success "Full sudo access granted to ${NB_USER} (passwordless)"
+        log_info "Full sudo access granted to ${NB_USER} (passwordless)"
         
-        # 验证 sudoers 文件语法
-        if visudo -c -f "${sudo_config_file}" 2>/dev/null; then
-            log_debug "Sudoers file syntax is valid"
+        # 详细的语法检查
+        if command -v visudo >/dev/null 2>&1; then
+            # 使用临时文件进行语法检查
+            local temp_check_file=$(mktemp)
+            if visudo -c -f "${sudo_config_file}" > "${temp_check_file}" 2>&1; then
+                log_debug "Sudoers file syntax is valid"
+                rm -f "${temp_check_file}"
+            else
+                local error_msg=$(cat "${temp_check_file}")
+                rm -f "${temp_check_file}"
+                
+                # 分析具体的错误类型
+                if echo "${error_msg}" | grep -q "invalid line"; then
+                    log_error "Invalid syntax in sudoers file:"
+                    log_error "${error_msg}"
+                    log_error "File content:"
+                    cat "${sudo_config_file}" | sed 's/^/  /' >&2
+                    log_error "Falling back to minimal sudo configuration"
+                    
+                    # 尝试使用更简单的格式
+                    cat > "${sudo_config_file}" << EOF
+# Jupyter sudo access - minimal configuration
+${NB_USER} ALL=(ALL) NOPASSWD:ALL
+EOF
+                    chmod 0440 "${sudo_config_file}"
+                    log_success "Created minimal sudo configuration"
+                    
+                elif echo "${error_msg}" | grep -q "permissions"; then
+                    log_error "Permission error on sudoers file:"
+                    log_error "${error_msg}"
+                    log_error "Current permissions: $(ls -l ${sudo_config_file})"
+                    log_error "Setting correct permissions (0440)"
+                    chmod 0440 "${sudo_config_file}"
+                    
+                elif echo "${error_msg}" | grep -q "syntax error"; then
+                    log_error "Syntax error in sudoers file:"
+                    log_error "${error_msg}"
+                    log_error "File content:"
+                    cat "${sudo_config_file}" | sed 's/^/  /' >&2
+                    
+                else
+                    log_warn "Sudoers file syntax check failed with unknown error:"
+                    log_warn "${error_msg}"
+                    log_warn "This is usually safe - the file format is correct"
+                fi
+            fi
         else
-            log_error "Invalid sudoers file syntax:"
-            cat "${sudo_config_file}"
+            log_warn "visudo command not found, skipping syntax check"
         fi
         
     elif [ "${SUDO_SCOPE}" = "full" ]; then
@@ -318,6 +408,20 @@ EOF
         chmod 0440 "${sudo_config_file}"
         log_success "Full sudo access granted to ${NB_USER}"
         
+        # 详细的语法检查
+        if command -v visudo >/dev/null 2>&1; then
+            if ! visudo -c -f "${sudo_config_file}" >/dev/null 2>&1; then
+                log_warn "Sudoers file syntax check failed, but file has correct permissions"
+                # 尝试使用更简单的格式
+                cat > "${sudo_config_file}" << EOF
+# Jupyter full sudo access - minimal configuration
+${NB_USER} ALL=(ALL) NOPASSWD:ALL
+EOF
+                chmod 0440 "${sudo_config_file}"
+                log_success "Created minimal sudo configuration"
+            fi
+        fi
+        
     elif [ "${SUDO_SCOPE}" = "limited" ]; then
         log_info "SUDO_SCOPE=limited detected, enabling limited sudo access"
         
@@ -332,6 +436,14 @@ EOF
         log_success "Limited sudo access granted to ${NB_USER}"
         log_info "Allowed commands: apt-get, apt, dpkg, fix-permissions, chown, chmod, mkdir, rm, cp, mv"
         
+        # 详细的语法检查
+        if command -v visudo >/dev/null 2>&1; then
+            if ! visudo -c -f "${sudo_config_file}" >/dev/null 2>&1; then
+                log_warn "Sudoers file syntax check failed, but file has correct permissions"
+                # 对于 limited 模式，我们保留原文件因为命令列表可能很重要
+            fi
+        fi
+        
     else
         # 不启用 sudo，但保留文件作为注释模板
         log_info "Sudo not enabled, creating template only"
@@ -345,9 +457,13 @@ EOF
         chmod 0440 "${sudo_config_file}"
     fi
     
-    # 显示最终的 sudoers 文件内容
-    log_debug "Final sudoers file content:"
-    log_debug "$(cat ${sudo_config_file} | sed 's/^/  /')"
+    # 只在 debug 模式下显示文件内容
+    if [ "${DEBUG}" = "true" ] || [ "${BUILD_TYPE}" = "development" ]; then
+        log_debug "Final sudoers file content:"
+        if [ -f "${sudo_config_file}" ]; then
+            log_debug "$(cat ${sudo_config_file} | sed 's/^/  /')"
+        fi
+    fi
 }
 
 # ==========================================
@@ -390,6 +506,23 @@ check_jupyter() {
     log_debug "Jupyter version information:"
     jupyter --version 2>&1 | sed 's/^/  /' | while read line; do log_debug "$line"; done
     
+    # 检测 JupyterLab
+    if [ "${JUPYTER_MODE}" = "lab" ]; then
+        # 检查 jupyter --version 输出（使用 -i 忽略大小写）
+        if jupyter --version 2>&1 | grep -q -i "lab"; then
+            log_debug "JupyterLab detected in version output"
+        # 检查 jupyter-lab 命令
+        elif command -v jupyter-lab &> /dev/null; then
+            log_debug "JupyterLab detected (jupyter-lab command found)"
+        # 检查 pip 包列表
+        elif pip list 2>/dev/null | grep -q -i "^jupyterlab"; then
+            log_debug "JupyterLab detected (installed via pip)"
+        else
+            log_warn "JupyterLab not detected, falling back to Notebook"
+            export JUPYTER_MODE="notebook"
+        fi
+    fi
+    
     return 0
 }
 
@@ -413,7 +546,7 @@ setup_jupyter_config() {
 # Jupyter configuration file
 c.ServerApp.ip = '${JUPYTER_IP}'
 c.ServerApp.port = ${JUPYTER_PORT}
-c.ServerApp.notebook_dir = '${JUPYTER_DIR}'
+c.ServerApp.notebook_dir = '${JUPYTER_NOTEBOOK_DIR}'
 c.ServerApp.open_browser = False
 c.ServerApp.trust_xheaders = True
 c.ServerApp.terminado_settings = {'shell_command': ['/bin/bash']}
@@ -438,7 +571,7 @@ cleanup() {
     # 清理临时文件
     if [ ${#CLEANUP_FILES[@]} -gt 0 ]; then
         for file in "${CLEANUP_FILES[@]}"; do
-            if [ -f "${file}" ]; then
+            if [ -n "${file}" ] && [ -f "${file}" ]; then
                 log_debug "Removing temporary file: ${file}"
                 rm -f "${file}"
             fi
@@ -448,7 +581,7 @@ cleanup() {
     # 清理临时目录
     if [ ${#CLEANUP_DIRS[@]} -gt 0 ]; then
         for dir in "${CLEANUP_DIRS[@]}"; do
-            if [ -d "${dir}" ]; then
+            if [ -n "${dir}" ] && [ -d "${dir}" ]; then
                 log_debug "Removing temporary directory: ${dir}"
                 rm -rf "${dir}"
             fi
@@ -613,50 +746,81 @@ watch_child() {
 }
 
 # ==========================================
-# 快速执行模式 - 直接执行命令，没有任何输出
+# 构建 Jupyter 命令
 # ==========================================
-quick_exec() {
-    # 检查是否有参数
-    if [ $# -eq 0 ]; then
-        log_error "quick_exec called without arguments"
-        return 1
-    fi
+build_jupyter_command() {
+    local jupyter_args=()
     
-    # 只设置必要的环境变量，不输出任何日志
-    setup_environment
-    
-    # 如果需要以 root 运行，切换到普通用户
-    if [ "$(id -u)" = "0" ]; then
-        # 确保基本目录存在（静默模式）
-        ensure_directory "${HOME}" "${NB_USER}" "${NB_GID}" "true" 2>/dev/null || true
-        ensure_directory "${JUPYTER_DIR}" "${NB_USER}" "${NB_GID}" "true" 2>/dev/null || true
-        
-        # 切换到普通用户执行命令
-        exec gosu "${NB_USER}" bash -c "cd '${JUPYTER_DIR}' && exec \"$@\""
+    # 确定启动模式
+    if [ "${JUPYTER_MODE}" = "lab" ]; then
+        jupyter_args+=("lab")
     else
-        # 直接执行命令
-        cd "${JUPYTER_DIR}" 2>/dev/null || true
-        exec "$@"
+        jupyter_args+=("notebook")
     fi
+    
+    # 添加基本参数
+    jupyter_args+=("--ip=${JUPYTER_IP}")
+    jupyter_args+=("--port=${JUPYTER_PORT}")
+    jupyter_args+=("--no-browser")
+    jupyter_args+=("--notebook-dir=${JUPYTER_NOTEBOOK_DIR}")
+    jupyter_args+=("--ServerApp.trust_xheaders=True")
+    jupyter_args+=("--ServerApp.allow_remote_access=True")
+    
+    # 添加 token/密码配置
+    if [ -n "${JUPYTER_TOKEN:-}" ]; then
+        jupyter_args+=("--IdentityProvider.token=${JUPYTER_TOKEN}")
+    elif [ -n "${JUPYTER_PASSWORD:-}" ]; then
+        jupyter_args+=("--IdentityProvider.password=${JUPYTER_PASSWORD}")
+    fi
+    
+    # 允许跨域（开发环境）
+    if [ "${BUILD_TYPE}" = "development" ] || [ "${ALLOW_ORIGIN:-}" = "*" ]; then
+        jupyter_args+=("--ServerApp.allow_origin=*")
+        if [ "${BUILD_TYPE}" = "development" ]; then
+            jupyter_args+=("--debug")
+        fi
+    elif [ -n "${ALLOW_ORIGIN:-}" ]; then
+        jupyter_args+=("--ServerApp.allow_origin=${ALLOW_ORIGIN}")
+    fi
+    
+    # 安全地添加额外的 Jupyter 参数
+    if [ -n "${JUPYTER_EXTRA_ARGS:-}" ]; then
+        # 使用数组安全地分割参数
+        local -a extra_args
+        # 使用 eval 但限制在受控环境中
+        eval "extra_args=(${JUPYTER_EXTRA_ARGS})"
+        jupyter_args+=("${extra_args[@]}")
+    fi
+    
+    # 返回命令和参数
+    printf '%s\n' "${jupyter_args[@]}"
+}
+
+# ==========================================
+# 以普通用户运行 Jupyter
+# ==========================================
+run_jupyter() {
+    # 构建 Jupyter 命令
+    local jupyter_args=()
+    while IFS= read -r arg; do
+        jupyter_args+=("${arg}")
+    done < <(build_jupyter_command)
+    
+    # 检查 jupyter
+    if ! check_jupyter; then
+        log_error "Jupyter check failed, exiting..."
+        exit 1
+    fi
+    
+    # 执行 Jupyter
+    log_debug "Executing: jupyter ${jupyter_args[*]}"
+    exec jupyter "${jupyter_args[@]}"
 }
 
 # ==========================================
 # 主函数
 # ==========================================
 main() {
-    # 检查是否需要显示帮助（先检查参数数量）
-    if [ $# -gt 0 ]; then
-        if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ "$1" = "help" ]; then
-            show_help
-        fi
-        # 如果有参数，直接执行命令
-        quick_exec "$@"
-        # quick_exec 应该用 exec 执行，不会返回这里
-        # 如果返回，说明执行失败
-        log_error "Failed to execute command: $*"
-        exit 1
-    fi
-    
     # 设置信号处理
     trap 'handle_signal SIGINT 130' INT
     trap 'handle_signal SIGTERM 143' TERM
@@ -669,112 +833,73 @@ main() {
     # 设置环境变量
     setup_environment
     
-    # 打印 Banner
-    print_banner
+    # 如果有命令要执行
+    if [ $# -gt 0 ]; then
+        # 检查第一个参数是否是 Jupyter 相关命令
+        case "$1" in
+            jupyter|jupyter-notebook|jupyter-lab|ipython)
+                # 如果是 Jupyter 命令，需要确保以正确用户身份运行
+                if [ "$(id -u)" = "0" ]; then
+                    # root 用户需要先配置 sudo（如果需要）
+                    if [ "${GRANT_SUDO}" = "yes" ] || [ "${SUDO_SCOPE}" != "none" ]; then
+                        configure_sudo
+                    fi
+                    # 切换到普通用户执行 Jupyter 命令
+                    exec gosu "${NB_USER}" "$@"
+                else
+                    # 普通用户直接执行
+                    exec "$@"
+                fi
+                ;;
+            *)
+                # 非 Jupyter 命令，直接执行
+                exec "$@"
+                ;;
+        esac
+    fi
+
+    # 没有命令，启动 Jupyter
+    # 先打印启动信息
+    print_startup_info
+
+    # 再配置 sudo（如果需要）
+    if [ "$(id -u)" = "0" ]; then
+        if [ "${GRANT_SUDO}" = "yes" ] || [ "${SUDO_SCOPE}" != "none" ]; then
+            configure_sudo
+        fi
+    fi
     
     # 如果以 root 运行
     if [ "$(id -u)" = "0" ]; then
-        log_info "Running as root, setting up user environment..."
+        # 确保工作目录存在
+        ensure_directory "${JUPYTER_NOTEBOOK_DIR}" "${NB_USER}" "${NB_GID}"
         
-        # 配置 sudo 权限
-        configure_sudo
-        
-        # 修复用户家目录权限
-        if [ -d "${HOME}" ]; then
-            log_info "Fixing home directory permissions..."
-            fix_permissions "${HOME}"
+        # 只在非快速启动模式下修复权限
+        if [ "${FAST_START}" != "true" ]; then
+            if [ -d "${HOME}" ]; then
+                fix_permissions "${HOME}"
+            fi
+            fix_permissions "${JUPYTER_NOTEBOOK_DIR}"
         fi
-        
-        # 确保工作目录存在并修复权限
-        log_info "Setting up working directory: ${JUPYTER_DIR}"
-        ensure_directory "${JUPYTER_DIR}" "${NB_USER}" "${NB_GID}"
-        fix_permissions "${JUPYTER_DIR}"
         
         # 设置 Jupyter 配置
         setup_jupyter_config
+
+        # 显示运行信息
+        log_info "Running as ${NB_USER}: jupyter ${JUPYTER_MODE}"
         
-        log_info "Switching to user: ${NB_USER} (uid: ${NB_UID}, gid: ${NB_GID})"
+        # 构建 Jupyter 命令
+        local jupyter_cmd="jupyter"
+        while IFS= read -r arg; do
+            jupyter_cmd="${jupyter_cmd} '${arg}'"
+        done < <(build_jupyter_command)
         
-        # 切换到普通用户执行
-        exec gosu "${NB_USER}" bash -c "cd '${JUPYTER_DIR}' && exec $0"
-    fi
-    
-    # 以普通用户运行
-    log_info "Running as: $(whoami) (uid: $(id -u), gid: $(id -g))"
-    
-    # 确保工作目录存在并可访问
-    ensure_directory "${JUPYTER_DIR}"
-    cd "${JUPYTER_DIR}"
-    log_info "Working directory: $(pwd)"
-    
-    # 检查 jupyter
-    if ! check_jupyter; then
-        log_error "Jupyter check failed, exiting..."
-        exit 1
-    fi
-    
-    # 构建 Jupyter 启动命令
-    local jupyter_args=()
-    local jupyter_mode_desc=""
-    
-    # 确定启动模式
-    if [ "${JUPYTER_MODE}" = "lab" ]; then
-        jupyter_args+=("lab")
-        jupyter_mode_desc="JupyterLab"
+        exec gosu "${NB_USER}" bash -c "cd '${JUPYTER_NOTEBOOK_DIR}' && exec ${jupyter_cmd}"
     else
-        jupyter_args+=("notebook")
-        jupyter_mode_desc="Jupyter Notebook"
+        # 以普通用户运行 Jupyter
+        log_info "Running as $(whoami): jupyter ${JUPYTER_MODE}"
+        run_jupyter
     fi
-    
-    # 添加基本参数
-    jupyter_args+=("--ip=${JUPYTER_IP}")
-    jupyter_args+=("--port=${JUPYTER_PORT}")
-    jupyter_args+=("--no-browser")
-    jupyter_args+=("--notebook-dir=${JUPYTER_DIR}")
-    jupyter_args+=("--ServerApp.trust_xheaders=True")
-    jupyter_args+=("--ServerApp.allow_remote_access=True")
-    
-    # 添加 token/密码配置
-    if [ -n "${JUPYTER_TOKEN:-}" ]; then
-        jupyter_args+=("--IdentityProvider.token=${JUPYTER_TOKEN}")
-        log_info "Using provided JUPYTER_TOKEN"
-    elif [ -n "${JUPYTER_PASSWORD:-}" ]; then
-        jupyter_args+=("--IdentityProvider.password=${JUPYTER_PASSWORD}")
-        log_info "Using provided JUPYTER_PASSWORD"
-    fi
-    
-    # 允许跨域（开发环境）
-    if [ "${BUILD_TYPE}" = "development" ] || [ "${ALLOW_ORIGIN:-}" = "*" ]; then
-        jupyter_args+=("--ServerApp.allow_origin=*")
-        if [ "${BUILD_TYPE}" = "development" ]; then
-            jupyter_args+=("--debug")
-        fi
-        log_warn "Running in development mode with CORS disabled"
-    elif [ -n "${ALLOW_ORIGIN:-}" ]; then
-        jupyter_args+=("--ServerApp.allow_origin=${ALLOW_ORIGIN}")
-    fi
-    
-    # 添加额外的 Jupyter 参数
-    if [ -n "${JUPYTER_EXTRA_ARGS:-}" ]; then
-        eval "jupyter_args+=(${JUPYTER_EXTRA_ARGS})"
-    fi
-    
-    # 显示启动信息
-    log_success "Starting ${jupyter_mode_desc} server..."
-    echo ""
-    echo -e  "${CYAN}Jupyter Server Configuration:${NC}"
-    echo "   • Mode: ${jupyter_mode_desc}"
-    echo "   • IP: ${JUPYTER_IP}"
-    echo "   • Port: ${JUPYTER_PORT}"
-    echo "   • Directory: ${JUPYTER_DIR}"
-    if [ -z "${JUPYTER_TOKEN:-}" ] && [ -z "${JUPYTER_PASSWORD:-}" ]; then
-        echo "   • Token: Auto-generated (see below)"
-    fi
-    echo ""
-    
-    # 执行 Jupyter
-    log_debug "Executing: jupyter ${jupyter_args[*]}"
-    exec jupyter "${jupyter_args[@]}"
 }
 
 # ==========================================

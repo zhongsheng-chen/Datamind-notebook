@@ -914,6 +914,115 @@ c.ServerApp.ip = os.environ.get('JUPYTER_IP', '0.0.0.0')
 ## 
 #  See also: Application.logging_config
 # c.ServerApp.logging_config = {}
+log_dir = os.environ.get('JUPYTER_LOG_DIR', '/var/log/jupyter')
+log_level = os.environ.get('JUPYTER_LOG_LEVEL', 'DEBUG').upper()
+
+c.ServerApp.logging_config = {
+    "version": 1,
+    "formatters": {
+        "detailed": {
+            "class": "logging.Formatter",
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S"
+        },
+        "console": {
+            "class": "logging.Formatter",
+            "format": "[%(name)s] %(levelname)s %(message)s"
+        },
+        "verbose": {
+            "class": "logging.Formatter",
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(pathname)s:%(lineno)d - %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S"
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": log_level,
+            "formatter": "console",
+            "stream": "ext://sys.stdout"
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "DEBUG",
+            "formatter": "detailed",
+            "filename": os.path.join(log_dir, "jupyter_server.log"),
+            "maxBytes": 10485760,  # 10MB
+            "backupCount": 5,
+            "encoding": "utf8"
+        },
+        "error_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "ERROR",
+            "formatter": "verbose",
+            "filename": os.path.join(log_dir, "jupyter_server_error.log"),
+            "maxBytes": 10485760,  # 10MB
+            "backupCount": 3,
+            "encoding": "utf8"
+        },
+        "access_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "INFO",
+            "formatter": "detailed",
+            "filename": os.path.join(log_dir, "jupyter_access.log"),
+            "maxBytes": 10485760,
+            "backupCount": 3,
+            "encoding": "utf8"
+        }
+    },
+    "loggers": {
+        "": {
+            "level": "DEBUG",
+            "handlers": ["console", "file"],
+            "propagate": True
+        },        
+        "jupyter_server": {
+            "level": "DEBUG",
+            "handlers": ["console", "file", "error_file"],
+            "propagate": False
+        },
+        "jupyter_server.contents": {
+            "level": "INFO",
+            "handlers": ["file"],
+            "propagate": False
+        },
+        "jupyter_server.kernels": {
+            "level": "DEBUG",
+            "handlers": ["file", "error_file"],
+            "propagate": False
+        },
+        "tornado.access": {
+            "level": "INFO",
+            "handlers": ["console", "access_file", "file"],
+            "propagate": False
+        },
+        "tornado.application": {
+            "level": "INFO",
+            "handlers": ["console", "file", "error_file"],
+            "propagate": False
+        },
+        "tornado.general": {
+            "level": "INFO",
+            "handlers": ["console", "file", "error_file"],
+            "propagate": False
+        },
+        "jupyterlab": {
+            "level": "INFO",
+            "handlers": ["file"],
+            "propagate": False
+        },
+        "jupyter_lsp": {
+            "level": "INFO",
+            "handlers": ["file"],
+            "propagate": False
+        }
+    },
+    "root": {
+        "level": "DEBUG",
+        "handlers": ["console", "file"]
+    },
+    "disable_existing_loggers": False  # 确保不禁用已有的 logger
+}
 
 ## The login handler class to use.
 #  Default: 'jupyter_server.auth.login.LegacyLoginHandler'
@@ -945,7 +1054,7 @@ c.ServerApp.ip = os.environ.get('JUPYTER_IP', '0.0.0.0')
 ## DEPRECATED, use root_dir.
 #  Default: ''
 # c.ServerApp.notebook_dir = ''
-c.ServerApp.notebook_dir = os.environ.get('JUPYTER_DIR', '/workspace')
+c.ServerApp.notebook_dir = os.environ.get('JUPYTER_NOTEBOOK_DIR', '/home/jovyan/workspace')
 
 ## Whether to open in a browser after starting.
 #                          The specific browser used is platform dependent and
