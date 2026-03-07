@@ -652,6 +652,7 @@ c.ServerApp.allow_origin = '*'
 #         along with hostnames configured in local_hostnames.
 #  Default: False
 # c.ServerApp.allow_remote_access = False
+c.ServerApp.allow_remote_access = True
 
 ## Whether to allow the user to run the server as root.
 #  Default: False
@@ -863,6 +864,9 @@ c.ServerApp.ip = os.environ.get('JUPYTER_IP', '0.0.0.0')
 #  will be loaded in alphabetical order.
 #  Default: {}
 # c.ServerApp.jpserver_extensions = {}
+c.ServerApp.jpserver_extensions = {
+    "jupyter_lsp": False
+}
 
 ## The kernel manager class to use.
 #  Default: 'jupyter_server.services.kernels.kernelmanager.MappingKernelManager'
@@ -915,7 +919,8 @@ c.ServerApp.ip = os.environ.get('JUPYTER_IP', '0.0.0.0')
 #  See also: Application.logging_config
 # c.ServerApp.logging_config = {}
 log_dir = os.environ.get('JUPYTER_LOG_DIR', '/var/log/jupyter')
-log_level = os.environ.get('JUPYTER_LOG_LEVEL', 'DEBUG').upper()
+os.makedirs(log_dir, exist_ok=True)
+log_level = os.environ.get('JUPYTER_LOG_LEVEL', 'INFO').upper()
 
 c.ServerApp.logging_config = {
     "version": 1,
@@ -944,7 +949,7 @@ c.ServerApp.logging_config = {
         },
         "file": {
             "class": "logging.handlers.RotatingFileHandler",
-            "level": "DEBUG",
+            "level": "INFO",
             "formatter": "detailed",
             "filename": os.path.join(log_dir, "jupyter_server.log"),
             "maxBytes": 10485760,  # 10MB
@@ -972,12 +977,12 @@ c.ServerApp.logging_config = {
     },
     "loggers": {
         "": {
-            "level": "DEBUG",
+            "level": "INFO",
             "handlers": ["console", "file"],
             "propagate": True
         },        
         "jupyter_server": {
-            "level": "DEBUG",
+            "level": "INFO",
             "handlers": ["console", "file", "error_file"],
             "propagate": False
         },
@@ -987,7 +992,7 @@ c.ServerApp.logging_config = {
             "propagate": False
         },
         "jupyter_server.kernels": {
-            "level": "DEBUG",
+            "level": "INFO",
             "handlers": ["file", "error_file"],
             "propagate": False
         },
@@ -1018,7 +1023,7 @@ c.ServerApp.logging_config = {
         }
     },
     "root": {
-        "level": "DEBUG",
+        "level": "INFO",
         "handlers": ["console", "file"]
     },
     "disable_existing_loggers": False  # 确保不禁用已有的 logger
@@ -1054,7 +1059,6 @@ c.ServerApp.logging_config = {
 ## DEPRECATED, use root_dir.
 #  Default: ''
 # c.ServerApp.notebook_dir = ''
-c.ServerApp.notebook_dir = os.environ.get('JUPYTER_NOTEBOOK_DIR', '/home/jovyan/workspace')
 
 ## Whether to open in a browser after starting.
 #                          The specific browser used is platform dependent and
@@ -1067,6 +1071,15 @@ c.ServerApp.notebook_dir = os.environ.get('JUPYTER_NOTEBOOK_DIR', '/home/jovyan/
 ## DEPRECATED in 2.0. Use PasswordIdentityProvider.hashed_password
 #  Default: ''
 # c.ServerApp.password = ''
+password = os.environ.get('JUPYTER_PASSWORD', '')
+if password:
+    if password.startswith(('argon2:', 'sha1:')):
+        c.ServerApp.password = password
+    else:
+        from jupyter_server.auth import passwd
+        c.ServerApp.password = passwd(password)
+else:
+    c.ServerApp.password = ''
 
 ## DEPRECATED in 2.0. Use PasswordIdentityProvider.password_required
 #  Default: False
@@ -1109,6 +1122,10 @@ c.ServerApp.quit_button = False
 ## The directory to use for notebooks and kernels.
 #  Default: ''
 # c.ServerApp.root_dir = ''
+c.ServerApp.root_dir = os.environ.get(
+    'JUPYTER_NOTEBOOK_DIR',
+    '/home/jovyan/workspace'
+)
 
 ## The session manager class to use.
 #  Default: 'builtins.object'
@@ -1153,6 +1170,9 @@ c.ServerApp.quit_button = False
 ## Supply overrides for terminado. Currently only supports "shell_command".
 #  Default: {}
 # c.ServerApp.terminado_settings = {}
+c.ServerApp.terminado_settings = {
+    'shell_command': ['/bin/bash']
+}
 
 ## Set to False to disable terminals.
 #  
@@ -1171,10 +1191,15 @@ c.ServerApp.terminals_enabled = True
 token = os.environ.get('JUPYTER_TOKEN', '')
 if token:
     c.IdentityProvider.token = token
+else:
+    c.IdentityProvider.token = ''
 
 ## Supply overrides for the tornado.web.Application that the Jupyter server uses.
 #  Default: {}
 # c.ServerApp.tornado_settings = {}
+c.ServerApp.tornado_settings = {
+    "log_function": lambda handler: None
+}
 
 ## Whether to trust or not X-Scheme/X-Forwarded-Proto and X-Real-Ip/X-Forwarded-
 #  For headerssent by the upstream reverse proxy. Necessary if the proxy handles
@@ -1234,12 +1259,14 @@ c.ServerApp.trust_xheaders = True
 #  closed from the server side.
 #  Default: 0
 # c.ServerApp.websocket_ping_interval = 0
+c.ServerApp.websocket_ping_interval = 30
 
 ## Configure the websocket ping timeout in seconds.
 #  
 #  See ``websocket_ping_interval`` for details.
 #  Default: 0
 # c.ServerApp.websocket_ping_timeout = 0
+c.ServerApp.websocket_ping_timeout = 30
 
 ## The base URL for websockets,
 #          if it differs from the HTTP server (hint: it almost certainly doesn't).

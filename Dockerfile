@@ -30,8 +30,15 @@ ARG VERSION=latest
 ARG BUILD_DATE
 ARG GIT_COMMIT
 
+# Nodejs 配置
+ARG INSTALL_NODEJS=false
+ARG NODEJS_VERSION=20
+
 # 权限控制配置
 ARG GRANT_SUDO=no
+
+# 是否精简镜像（额外清理）
+ARG MINIMIZE_IMAGE=true
 
 ###################################
 #            环境变量 
@@ -40,6 +47,7 @@ ENV TZ=Asia/Shanghai \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1 \
+    PIP_PREFER_BINARY=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     JUPYTER_IP=0.0.0.0 \
     JUPYTER_PORT=8888 \
@@ -58,7 +66,8 @@ ENV TZ=Asia/Shanghai \
     PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL} \
     PIP_CACHE_DIR=/home/${NB_USER}/.cache/pip \
     HOME=/home/${NB_USER} \
-    GRANT_SUDO=${GRANT_SUDO}
+    GRANT_SUDO=${GRANT_SUDO} \
+    PATH=/home/${NB_USER}/.local/bin:/usr/local/bin:$PATH
 
 ###################################
 #        创建用户和必要的目录
@@ -69,7 +78,7 @@ RUN groupadd -g ${NB_GID} ${NB_USER} && \
     mkdir -p /home/${NB_USER}/workspace && \
     mkdir -p /home/${NB_USER}/.jupyter && \
     mkdir -p /home/${NB_USER}/.local && \
-    mkdir -p /home/${NB_USER}/.cache && \
+    mkdir -p /home/${NB_USER}/.cache/pip && \
     mkdir -p /var/log/jupyter && \
     # 设置初始权限
     chown -R ${NB_USER}:${NB_USER} /home/${NB_USER}
@@ -81,28 +90,35 @@ RUN chmod +x /usr/local/bin/fix-permissions
 ###################################
 #           安装系统依赖 
 ###################################
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    git \
-    gosu \
-    sudo \
-    bash \
-    bash-completion \
-    expect-dev \
-    bsdmainutils \
-    ca-certificates \
-    ${EXTRA_APT_PACKAGES} \
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        git \
+        gosu \
+        sudo \
+        bash \
+        bash-completion \
+        unzip \
+        less \
+        nano-tiny \
+        tzdata \
+        xclip \
+        procps \
+        libgomp1 \
+        ca-certificates \
+        ${EXTRA_APT_PACKAGES} \
     && if [ "${INSTALL_DEV_TOOLS}" = "true" ]; then \
         apt-get install -y --no-install-recommends \
-        vim \
-        nano \
-        htop \
-        procps \
-        tree; \
+            vim \
+            htop \
+            tree; \
     fi \
+    && ln -snf /usr/share/zoneinfo/${TZ:-Asia/Shanghai} /etc/localtime \
+    && echo ${TZ:-Asia/Shanghai} > /etc/timezone \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/nano-tiny /usr/bin/nano 2>/dev/null || true
 
 ###################################
 #    配置 pip 镜像源（针对所有用户）
@@ -125,34 +141,113 @@ RUN mkdir -p /etc/sudoers.d && \
 
 ###################################
 #       安装 Python 依赖
-#    （使用非root用户执行安装） 
 ###################################
 USER ${NB_USER}
 
-COPY requirements.txt /tmp/requirements.txt
-
-# 升级 pip 并安装基础包（使用非root用户执行安装）
+# 安装基础工具包
 RUN --mount=type=cache,target=${PIP_CACHE_DIR},uid=${NB_UID},gid=${NB_GID} \
     pip install --upgrade pip setuptools wheel && \
-    pip install jupyterlab notebook && \
-    pip install -r /tmp/requirements.txt && \
-    if [ "${BUILD_TYPE}" = "development" ]; then \
-        pip install \
-        ipdb pytest pytest-cov black flake8 mypy pre-commit ipywidgets; \
-    elif [ "${BUILD_TYPE}" = "testing" ]; then \
-        pip install \
-        pytest pytest-cov pytest-xdist; \
+    pip install --no-cache-dir \
+        jupyterlab~=4.0 \
+        notebook~=7.0 \
+        ipykernel~=6.0
+
+# 复制并安装项目依赖
+COPY requirements.txt /tmp/requirements.txt
+RUN --mount=type=cache,target=${PIP_CACHE_DIR},uid=${NB_UID},gid=${NB_GID} \
+    pip install --no-cache-dir -r /tmp/requirements.txt
+
+###################################
+#       条件安装 Node.js
+###################################
+USER root
+
+RUN if [ "${INSTALL_NODEJS}" = "true" ]; then \
+        # 安装 Node.js
+        curl -fsSL https://deb.nodesource.com/setup_${NODEJS_VERSION}.x | bash - && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends nodejs && \
+        # 清理 npm 缓存
+        npm cache clean --force && \
+        rm -rf /root/.npm /root/.node-gyp && \
+        # 精简 npm
+        npm config set fund false --global && \
+        npm config set audit false --global && \
+        # 删除 npm 文档
+        rm -rf /usr/local/lib/node_modules/npm/{man,html,doc} 2>/dev/null || true && \
+        # 清理 APT
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+USER ${NB_USER}
+
+# 如果安装了 Node.js，构建 JupyterLab
+RUN if [ "${INSTALL_NODEJS}" = "true" ] && command -v node >/dev/null 2>&1; then \
+        echo "Node.js found, building JupyterLab..." && \
+        jupyter lab build; \
+    else \
+        echo "Node.js not found, skipping JupyterLab build"; \
     fi
 
 ###################################
-#   清理构建依赖（需要root权限）
+#       安装开发/测试工具
+###################################
+RUN --mount=type=cache,target=${PIP_CACHE_DIR},uid=${NB_UID},gid=${NB_GID} \
+    if [ "${BUILD_TYPE}" = "development" ]; then \
+        echo "Installing development tools..." && \
+        pip install --no-cache-dir \
+            ipdb \
+            pytest \
+            pytest-cov \
+            pytest-xdist \
+            pytest-mock \
+            black \
+            flake8 \
+            mypy \
+            pre-commit \
+            ipywidgets \
+            jupyterlab-git \
+            jupyterlab-lsp \
+            python-lsp-server; \
+    elif [ "${BUILD_TYPE}" = "testing" ]; then \
+        echo "Installing testing tools..." && \
+        pip install --no-cache-dir \
+            pytest \
+            pytest-cov \
+            pytest-xdist \
+            pytest-mock \
+            pytest-asyncio; \
+    fi && \
+    # 验证关键包是否安装成功
+    python -c "import jupyter; print('Jupyter core installed')" 2>/dev/null || true
+
+###################################
+#           精简镜像
 ###################################
 USER root
-RUN if [ "${CLEAN_BUILD_DEPS}" = "true" ] && [ "${BUILD_TYPE}" = "production" ]; then \
-        apt-get purge -y build-essential && \
-        apt-get autoremove -y; \
+
+RUN if [ "${MINIMIZE_IMAGE}" = "true" ]; then \
+        # 清理 pip 缓存
+        rm -rf /home/${NB_USER}/.cache/pip/* && \
+        # 删除 Python 字节码文件
+        find /home/${NB_USER}/.local -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
+        find /home/${NB_USER}/.local -name "*.pyc" -delete && \
+        find /home/${NB_USER}/.local -name "*.pyo" -delete && \
+        # 删除不必要的文档
+        rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/* && \
+        # 删除临时文件
+        rm -rf /tmp/* /var/tmp/* && \
+        # 如果不需要构建依赖，清理 build-essential
+        if [ "${CLEAN_BUILD_DEPS}" = "true" ] && [ "${BUILD_TYPE}" = "production" ]; then \
+            apt-get purge -y build-essential gcc g++ make && \
+            apt-get autoremove -y; \
+        fi; \
     fi && \
-    # 清理临时文件
+    # 清理包管理器缓存
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    # 删除安装脚本
     rm -f /tmp/requirements.txt
 
 ###################################
@@ -169,13 +264,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/healthcheck.py && \
     fix-permissions /var/log/jupyter && \
     # 修复用户主目录权限
     fix-permissions /home/${NB_USER} && \
+    chmod -R u+rwX /home/${NB_USER}/.cache && \
     # 修复脚本权限
     fix-permissions /usr/local/bin/healthcheck.py
-
-# 验证日志目录权限（可选，用于调试）
-# RUN ls -la /var/log/ | grep jupyter && \
-#     echo "Jupyter log directory permissions:" && \
-#     ls -la /var/log/jupyter
 
 ###################################
 #            添加标签 

@@ -2,13 +2,37 @@ version: '3.8'
 
 services:
   jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 构建参数配置
+        - BUILD_TYPE=${BUILD_TYPE:-development}
+        - PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        - PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}
+        - PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+        - EXTRA_APT_PACKAGES=${EXTRA_APT_PACKAGES:-}
+        - CLEAN_BUILD_DEPS=${CLEAN_BUILD_DEPS:-true}
+        - INSTALL_DEV_TOOLS=${INSTALL_DEV_TOOLS:-false}
+        - NB_USER=${NB_USER:-jovyan}
+        - NB_UID=${NB_UID:-1000}
+        - NB_GID=${NB_GID:-1000}
+        - VERSION=${VERSION:-latest-dev}
+        - BUILD_DATE=${BUILD_DATE:-$(date -u +'%Y-%m-%d')}
+        - GIT_COMMIT=${GIT_COMMIT:-}
+        - GRANT_SUDO=${GRANT_SUDO:-no}
+    
     image: ${IMAGE_NAME:-datamind-notebook}:${IMAGE_TAG:-latest}
     container_name: ${CONTAINER_NAME:-datamind-notebook}
+
     env_file:
-      - .env
+      # 环境变量文件
+      - .env.dev
+
     environment:
+      # 运行时环境变量
       - TZ=Asia/Shanghai
-      - BUILD_TYPE=${BUILD_TYPE:-production}
+      - BUILD_TYPE=${BUILD_TYPE:-development}
       - NB_USER=${NB_USER:-jovyan}
       - NB_UID=${NB_UID:-1000}
       - NB_GID=${NB_GID:-1000}
@@ -24,7 +48,7 @@ services:
     
     volumes:
       # 挂载工作目录，实现代码持久化和实时编辑
-      - ./workspace:/home/${NB_USER:-jovyan}/workspace
+      - workspace:/home/${NB_USER:-jovyan}/workspace
 
       # 可选：挂载数据目录
       - data:/home/${NB_USER:-jovyan}/.local/share/jupyter
@@ -81,8 +105,8 @@ services:
     # 添加标签
     labels:
       - "maintainer=Zhongsheng Chen"
-      - "version=${VERSION:-latest}"
-      - "build.type=${BUILD_TYPE:-production}"
+      - "version=${VERSION:-latest-dev}"
+      - "build.type=${BUILD_TYPE:-development}"
       - "description=Jupyter Notebook for Datamind"
       - "network.name=${NETWORK_NAME:-datamind-notebook-network}"
 
@@ -98,6 +122,9 @@ networks:
 
 # 数据卷配置
 volumes:
+  workspace:
+    name: ${VOLUME_PREFIX:-datamind-notebook}-workspace
+    driver: local
   data:
     name: ${VOLUME_PREFIX:-datamind-notebook}-data
     driver: local

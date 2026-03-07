@@ -10,7 +10,8 @@
         clean clean-all test show-info save load push pull \
         version inspect history \
         builder-create builder-use builder-stop builder-rm \
-        build-multi build-multi-push build-multi-dev build-multi-prod build-multi-test
+        build-multi build-multi-push build-multi-dev build-multi-prod build-multi-test \
+        size size-detail size-analyze size-compile
 
 # ==================== 默认变量 ====================
 DEFAULT_REGISTRY  := docker.io
@@ -46,6 +47,9 @@ INSTALL_DEV_TOOLS ?= false
 
 # 是否清理构建依赖
 CLEAN_BUILD_DEPS ?= true
+
+# 是否精简镜像（额外清理）
+MINIMIZE_IMAGE=true
 
 # 是否生成元数据标签
 NEED_METADATA ?= false
@@ -89,6 +93,7 @@ BUILD_ARGS_CACHEABLE = \
 	--build-arg EXTRA_APT_PACKAGES="$(EXTRA_APT_PACKAGES)" \
 	--build-arg INSTALL_DEV_TOOLS=$(INSTALL_DEV_TOOLS) \
 	--build-arg CLEAN_BUILD_DEPS=$(CLEAN_BUILD_DEPS) \
+	--build-arg MINIMIZE_IMAGE=$(MINIMIZE_IMAGE) \
 	--build-arg VERSION="$(VERSION)" \
 	--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 	--build-arg BUILD_DATE="$(BUILD_DATE)"
@@ -134,6 +139,7 @@ help:
 	@echo ""
 	@echo "$(YELLOW)基础构建:$(NC)"
 	@echo "  make build                            - 使用当前配置构建（默认production）"
+	@echo "  make build-minimal                    - 最小化构建"
 	@echo "  make build-dev                        - 构建开发环境"
 	@echo "  make build-test                       - 构建测试环境"
 	@echo "  make build-prod                       - 构建生产环境"
@@ -161,6 +167,12 @@ help:
 	@echo "  make build-dev-tools                  - 安装开发工具"
 	@echo "  make build-dev-tools-nocache          - 无缓存构建安装开发工具"
 	@echo "  make build-with-token TOKEN=xxx       - 构建时使用私有源（需要token）"
+	@echo ""
+	@echo "$(YELLOW)镜像大小分析:$(NC)"
+	@echo "  make size                             - 查看镜像大小信息"
+	@echo "  make size-detail                       - 使用 Dive 详细分析镜像"
+	@echo "  make size-analyze                       - 分析镜像组成（最大文件/目录）"
+	@echo "  make size-compile                       - 对比不同配置的镜像大小"
 	@echo ""
 	@echo "$(YELLOW)运行命令:$(NC)"
 	@echo "  make run                              - 运行容器"
@@ -265,6 +277,18 @@ build-test:
 
 build-prod:
 	$(MAKE) build BUILD_TYPE=production INSTALL_DEV_TOOLS=false
+
+# ==================== 最小化构建 ====================
+build-minimal:
+	$(MAKE) build \
+		BUILD_TYPE=production \
+		INSTALL_DEV_TOOLS=false \
+		INSTALL_NODEJS=false \
+		EXTRA_APT_PACKAGES="" \
+		MINIMIZE_IMAGE=true \
+		CLEAN_BUILD_DEPS=true \
+		NO_CACHE=true \
+		TAGS="-t $(IMAGE_NAME):minimal -t $(IMAGE_NAME):latest"
 
 # ==================== 镜像源选择 ====================
 build-tsinghua:
@@ -701,6 +725,75 @@ build-multi-prod:
 
 build-multi-test:
 	$(MAKE) build-multi-push BUILD_TYPE=testing INSTALL_DEV_TOOLS=false
+
+# ==================== 镜像大小分析命令 ====================
+size:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)镜像大小信息$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@docker images $(IMAGE_NAME) --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}"
+	@echo ""
+	@echo "$(YELLOW)分层大小（最近10层）:$(NC)"
+	@docker history $(IMAGE_NAME):latest --format "table {{.CreatedSince}}\t{{.Size}}\t{{.CreatedBy}}" --no-trunc | head -15
+
+size-detail:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)使用 Dive 进行详细分析$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@if ! command -v dive >/dev/null 2>&1; then \
+		echo "$(YELLOW)未安装 dive，使用 Docker 运行...$(NC)"; \
+		docker run --rm -it \
+			-v /var/run/docker.sock:/var/run/docker.sock \
+			-v $(PWD)/dive-out:/tmp \
+			wagoodman/dive:latest $(IMAGE_NAME):latest; \
+	else \
+		dive $(IMAGE_NAME):latest; \
+	fi
+
+size-analyze:
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)分析镜像组成$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(YELLOW)创建临时容器分析文件系统...$(NC)"
+	$(eval CONTAINER_ID := $(shell docker create $(IMAGE_NAME):latest))
+	@echo "容器 ID: $(CONTAINER_ID)"
+	@echo ""
+	@echo "$(YELLOW)最大的20个文件/目录:$(NC)"
+	@docker export $(CONTAINER_ID) | tar -tv 2>/dev/null | awk '{print $$3, $$6}' | sort -nr | head -20 | \
+		awk '{printf "  %-10s %s\n", $$1, $$2}'
+	@docker rm $(CONTAINER_ID) > /dev/null
+	@echo ""
+	@echo "$(YELLOW)Python 包大小统计:$(NC)"
+	@docker run --rm $(IMAGE_NAME):latest sh -c "\
+		if command -v pip >/dev/null 2>&1; then \
+			echo '  Pip 包列表:'; \
+			pip list --format=freeze | while read pkg; do \
+				pkg_name=$$(echo $$pkg | cut -d= -f1); \
+				pkg_path=$$(pip show $$pkg_name 2>/dev/null | grep Location | cut -d' ' -f2); \
+				if [ -n \"$$pkg_path\" ]; then \
+					size=$$(du -sk $$pkg_path/$$pkg_name 2>/dev/null | cut -f1); \
+					if [ -n \"$$size\" ]; then \
+						printf '    %-30s %s KB\n' $$pkg_name $$size; \
+					fi; \
+				fi; \
+			done | sort -k3 -rn | head -10; \
+		fi"
+
+size-compile: build-minimal build-medium build-full
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(GREEN)不同配置镜像大小对比$(NC)"
+	@echo "$(CYAN)==========================================================$(NC)"
+	@echo "$(YELLOW)官方 Jupyter 镜像:$(NC)"
+	-docker images jupyter/base-notebook:latest --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null || echo "  未找到"
+	@echo ""
+	@echo "$(YELLOW)最小配置镜像 (无 Node.js, 无开发工具):$(NC)"
+	-docker images $(IMAGE_NAME):minimal --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null || echo "  未构建"
+	@echo ""
+	@echo "$(YELLOW)中等配置镜像 (基础工具):$(NC)"
+	-docker images $(IMAGE_NAME):medium --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null || echo "  未构建"
+	@echo ""
+	@echo "$(YELLOW)完整配置镜像:$(NC)"
+	-docker images $(IMAGE_NAME):latest --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" 2>/dev/null || echo "  未构建"
 
 # ==================== 测试命令 ====================
 test:
